@@ -1,0 +1,23 @@
+{
+  "appName": "Nelson OS",
+  "company": "Nelson Group",
+  "companyAddress": "264 Salem Street, Medford, MA 02155",
+  "companyPhone": "(617) 300-0188",
+  "port": 4780,
+  "microsoft": {
+    "clientId": "",
+    "tenant": "common",
+    "_note": "Public client ID of the 'Nelson OS' Microsoft Entra app registration. Not a secret. See docs/MICROSOFT-APP.md."
+  },
+  "procore": {
+    "clientId": "",
+    "_note": "Optional. Procore developer app client ID (needs a client secret entered in the app)."
+  },
+  "ai": {
+    "model": "claude-opus-5-5"
+  },
+  "sync": {
+    "initialDays": 30,
+    "intervalMinutes": 10
+  }
+}
