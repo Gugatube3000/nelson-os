@@ -27,13 +27,22 @@ Put the ID in `config/defaults.json`, then commit and push:
 
 Installs that already exist pick it up after `node scripts/update.mjs`. Or paste it into **Connections → Outlook → Set up Microsoft sign-in** on one computer.
 
+## Nelson Group's Microsoft 365 (checked 2026-10-27 from public DNS)
+
+- `@nelsongc.com` mail is **Microsoft 365 / Exchange Online, bought through GoDaddy** (tenant `NETORGFT17343503.onmicrosoft.com`; `autodiscover` → `outlook.com`). The Outlook connection works with it.
+- Sign-in is federated: after Jonathan types his email, Microsoft sends him to **GoDaddy's sign-in page**. He uses his normal email password there, then sees the Microsoft "Nelson OS wants to read your mail" screen and clicks **Accept**.
+- Incoming mail passes through Proofpoint filtering first; that doesn't affect reading the mailbox.
+- GoDaddy-run tenants often require **admin approval** for outside apps. If Jonathan sees "Need admin approval", Nelson OS shows an **Open approval page** button and a link to send to the admin (below).
+
 ## Admin consent (Microsoft 365 work accounts)
 
 Some organizations block users from approving apps. If Jonathan sees **"Need admin approval"**, a Microsoft 365 admin opens this link once (replace the ID) and clicks **Accept**:
 
 ```
-https://login.microsoftonline.com/organizations/adminconsent?client_id=PASTE-THE-ID-HERE
+https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=PASTE-THE-ID-HERE&scope=https://graph.microsoft.com/.default&redirect_uri=http://localhost:4780/oauth/microsoft/callback
 ```
+
+Nelson OS builds this link automatically when it detects the "needs admin approval" response. For a GoDaddy-run tenant, the admin is the account that manages the Microsoft 365 plan in GoDaddy. If that account can't approve apps, GoDaddy support can grant admin consent for the app's client ID.
 
 ## What Nelson OS can and can't do with this access
 

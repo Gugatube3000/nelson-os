@@ -101,8 +101,25 @@ function saveTokens(t, previous = {}) {
   if (t.scope) setSetting('microsoft.scopes', t.scope.split(' ').map((s) => s.replace(/^https:\/\/graph\.microsoft\.com\//, '')));
 }
 
-export async function finishAuth({ code, state, error, error_description: desc }) {
-  if (error) throw new Error(desc || error);
+// Some companies (common with Microsoft 365 bought through GoDaddy) only let an admin approve
+// outside apps. The admin opens this link once and clicks Accept for the whole company.
+export function adminConsentUrl(tenant = 'organizations') {
+  const q = new URLSearchParams({ client_id: msConfig().clientId, scope: 'https://graph.microsoft.com/.default', redirect_uri: REDIRECT_URI, state: 'admin-consent' });
+  return `https://login.microsoftonline.com/${tenant}/v2.0/adminconsent?${q}`;
+}
+const NEEDS_ADMIN = /AADSTS(90094|90095|65001)|admin (approval|consent)|needs permission to access resources/i;
+
+export async function finishAuth({ code, state, error, error_description: desc, admin_consent: adminConsent }) {
+  if (adminConsent) {
+    if (String(adminConsent).toLowerCase() !== 'true') throw new Error(String(desc || 'The admin approval was not completed.').split('\r\n')[0]);
+    return { returnTo: '/#/connections', adminConsented: true };
+  }
+  if (error) {
+    if (NEEDS_ADMIN.test(`${error} ${desc || ''}`)) {
+      throw new Error(`Nelson Group's Microsoft 365 needs an admin to approve Nelson OS once. Ask whoever manages the Microsoft 365 account (the GoDaddy Microsoft 365 admin) to open this link, sign in and click Accept: ${adminConsentUrl()}`);
+    }
+    throw new Error(String(desc || error).split('\r\n')[0]);
+  }
   const p = pending.get(state);
   if (!p) throw new Error('This sign-in link expired. Click Connect again.');
   pending.delete(state);

@@ -153,12 +153,21 @@ export function AppTile({ app, onChange, compact }) {
   </div>`;
 }
 
+// Sign-in errors can carry a link (e.g. the one-time admin approval); make it clickable and copyable.
+function ErrorWithLink({ text }) {
+  const url = String(text).match(/https:\/\/\S+/)?.[0];
+  const message = url ? String(text).replace(url, '').replace(/:\s*$/, '.') : text;
+  return html`<div class="banner"><span class="grow">${message}</span>
+    ${url && html`<a class="btn sm primary" href=${url} target="_blank" rel="noopener">Open approval page</a><button class="btn sm" onClick=${() => navigator.clipboard.writeText(url).then(() => toast('Link copied. Send it to the admin.'))}>Copy link for the admin</button>`}</div>`;
+}
+
 export function Connections({ query }) {
   const { data, reload, loading } = useApi('/connections');
-  useEffect(() => { if (query?.error) toastErr(query.error); if (query?.connected) toast(query.connected === 'procore' ? 'Procore connected. Reading your projects now.' : 'Outlook connected. Reading the last 30 days now.'); }, []);
+  useEffect(() => { if (query?.approved) toast('Approved for the whole company. Now click Connect on Outlook.'); if (query?.connected) toast(query.connected === 'procore' ? 'Procore connected. Reading your projects now.' : 'Outlook connected. Reading the last 30 days now.'); }, []);
   if (!data) return html`<div class="page">${loading && html`<${Loading} />`}</div>`;
   return html`<div class="page">
     <div class="page-head"><div><h1>Connections</h1><p class="muted">AI engine: <b>${data.engine.label}</b></p></div></div>
+    ${query?.error && html`<${ErrorWithLink} text=${query.error} />`}
     ${GROUPS.map(([g, title, note]) => html`
       <div class="section-title"><h2>${title}</h2></div>
       ${note && html`<p class="muted small" style="margin:-4px 0 12px">${note}</p>`}

@@ -42,6 +42,15 @@ test('Outlook: a send attempt is refused before any network call', async () => {
   await assert.rejects(graph('/me/sendMail', { method: 'POST', body: { message: {} } }), (err) => err.code === 'SEND_BLOCKED');
 });
 
+test('Outlook: "needs admin approval" turns into a one-click approval link', async () => {
+  const { finishAuth } = await import('../server/sync/microsoft.js');
+  await assert.rejects(
+    finishAuth({ error: 'access_denied', error_description: 'AADSTS90094: An administrator of Nelson Group Street has set a policy that prevents you from granting Nelson OS the permissions it is requesting.' }),
+    (err) => /needs an admin to approve/.test(err.message) && /\/v2\.0\/adminconsent\?/.test(err.message) && /graph\.microsoft\.com%2F\.default/.test(err.message),
+  );
+  assert.deepEqual(await finishAuth({ admin_consent: 'True', state: 'admin-consent' }), { returnTo: '/#/connections', adminConsented: true });
+});
+
 test('the agent has no tool that sends, replies, forwards or approves', () => {
   for (const t of TOOLS) assert.doesNotMatch(t.name, /send|reply|forward|approve/i, t.name);
   assert.ok(TOOLS.some((t) => t.name === 'procore_request_change'));

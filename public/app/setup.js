@@ -55,6 +55,7 @@ function StepOutlook({ next }) {
   const outlook = data?.apps.find((a) => a.id === 'outlook');
   return html`<h2>Connect Outlook</h2>
     <p class="lead">Nelson OS reads the last 30 days of your email and your calendar to find active projects, who's waiting on you, RFIs, submittals, orders and dates. Access is read-only: it can't send, move or delete mail.</p>
+    <p class="small muted" style="margin:-12px 0 20px;max-width:620px">You sign in with your work email and its usual password. For @nelsongc.com addresses this opens GoDaddy's sign-in page, which is normal.</p>
     <div class="tiles" style="max-width:760px">${outlook && html`<${AppTile} app=${outlook} onChange=${reload} />`}</div>
     <div class="row" style="margin-top:26px"><button class="btn primary lg" onClick=${next}>${outlook?.connected ? 'Continue' : 'Skip for now'}</button></div>`;
 }

@@ -148,7 +148,11 @@ app.post('/api/connections/microsoft/app', (req, res) => {
 
 app.get('/oauth/microsoft/callback', wrap(async (req, res) => {
   try {
-    const { returnTo } = await ms.finishAuth(req.query);
+    const { returnTo, adminConsented } = await ms.finishAuth(req.query);
+    if (adminConsented) {
+      logActivity({ actor: 'user', kind: 'connect', title: 'Microsoft 365 admin approved Nelson OS for the company', why: 'One-time admin approval; access stays read-only.' });
+      return res.redirect('/#/connections?approved=microsoft');
+    }
     logActivity({ actor: 'user', kind: 'connect', title: `Connected Outlook (${ms.status().account?.email})`, why: 'Read-only access to mail and calendar.' });
     if (!getSetting('mail.lastSync')) syncMail({ days: CONFIG.sync?.initialDays || 30 }).catch(() => {});
     res.redirect(`${returnTo || '/'}${(returnTo || '/').includes('?') ? '&' : '?'}connected=outlook`);
