@@ -52,15 +52,15 @@ export function spawnCli(name, args, opts = {}) {
   if (!bin) throw Object.assign(new Error(`${name} is not installed`), { code: 'ENOENT' });
   const base = { windowsHide: true, cwd: opts.cwd || os.tmpdir(), env: cleanEnv({ NO_COLOR: '1', ...opts.env }), detached: opts.detached };
   if (isWin && /\.(cmd|bat)$/i.test(bin)) {
-    return spawn(`"${bin}"`, args.map(winQuote), { ...base, shell: true });
+    return spawn([`"${bin}"`, ...args.map(winQuote)].join(' '), { ...base, shell: true });
   }
   return spawn(bin, args, base);
 }
 
-export function runCli(name, args, { input = '', timeoutMs = 300000, cwd, onLine } = {}) {
+export function runCli(name, args, { input = '', timeoutMs = 300000, cwd, onLine, env } = {}) {
   return new Promise((resolve, reject) => {
     let child;
-    try { child = spawnCli(name, args, { cwd }); } catch (err) { reject(err); return; }
+    try { child = spawnCli(name, args, { cwd, env }); } catch (err) { reject(err); return; }
     let stdout = '';
     let stderr = '';
     let pending = '';
@@ -83,6 +83,27 @@ export function runCli(name, args, { input = '', timeoutMs = 300000, cwd, onLine
     child.stdin.on('error', () => {});
     child.stdin.end(input);
   });
+}
+
+// ---------- no-send lockdown for agent runs ----------
+// Inside Nelson OS the AI may only use Nelson OS tools. Claude.ai connectors and any other MCP
+// servers the person has installed (an email plugin, for example) are switched off, so the
+// agent has no path to send, reply to or forward anything.
+export const CLAUDE_LOCKDOWN_ENV = { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' };
+
+export async function codexLockdownArgs({ keep = [] } = {}) {
+  let servers = [];
+  try {
+    const r = await runCli('codex', ['mcp', 'list', '--json'], { timeoutMs: 30000 });
+    servers = JSON.parse(r.stdout.slice(r.stdout.indexOf('['))).map((s) => s.name);
+  } catch { /* no servers configured */ }
+  const args = [];
+  for (const name of servers) {
+    if (keep.includes(name)) continue;
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error(`Codex has an MCP server named "${name}" that Nelson OS cannot switch off safely. Remove it from Codex, or connect Claude instead.`);
+    args.push('-c', `mcp_servers.${name}.enabled=false`);
+  }
+  return args;
 }
 
 // ---------- sign-in status ----------

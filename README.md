@@ -22,6 +22,8 @@ No Claude Code or Codex? Download this repo as a ZIP, unzip it, and double-click
 
 ![Suggested reply](docs/reply.jpg)
 
+**Procore.** Connect once (OAuth, click Allow) and Nelson OS syncs active projects, RFIs, submittals and the schedule every 15 minutes, so the risk engine works on Procore's real data. The AI can also read anything else in Procore (daily logs, punch lists, budgets, commitments) through the bundled [procore-mcp-server](https://github.com/TylerIlunga/procore-mcp-server). Any change in Procore waits on the **Approvals** page until Jonathan approves it.
+
 **Projects.** Per-project logs for RFIs, submittals (with computed submit-by and back-by dates), orders and takeoffs (release-by dates), schedule (six-week view with blocked activities in red), change orders and budget, permits and inspections, contacts, email and activity.
 
 **Drawings.** Drop in PDF drawing sets and specs. Nelson OS reads every page, finds sheet numbers, and answers questions ("how many 30-inch vanities?") from the actual sheets with page citations.
@@ -45,9 +47,23 @@ No Claude Code or Codex? Download this repo as a ZIP, unzip it, and double-click
 
 Subscription engines run the same Nelson OS tools through the bundled MCP server, so the agent behaves the same on every engine.
 
-## One-time step for Gustavo: Microsoft app
+## One-time steps for Gustavo
+
+Both are standard OAuth sign-ins for Jonathan (click Connect, then Allow). Microsoft and Procore each require the app to be registered once before that screen can appear.
+
+- **Procore** (~10 min, plus a company admin installing it): [docs/PROCORE-APP.md](docs/PROCORE-APP.md)
+- **Microsoft / Outlook** (~5 min): [docs/MICROSOFT-APP.md](docs/MICROSOFT-APP.md)
+
+### Microsoft app
 
 Outlook sign-in needs a Microsoft app registration (5 minutes, no secret). Follow **[docs/MICROSOFT-APP.md](docs/MICROSOFT-APP.md)**, put the client ID in `config/defaults.json`, and push. Until then, the Outlook tile shows a guided setup panel.
+
+## Nothing goes out without Jonathan
+
+- **Email:** Nelson OS cannot send email. It asks Outlook for read-only access (`Mail.Read`, `Calendars.Read`), and every Microsoft Graph call passes a hard check that blocks send, reply, forward, move, edit and delete, even if a token ever had more permission. Drafts open in Outlook and only go out when Jonathan presses Send.
+- **Procore:** the AI's only write tool creates an approval card. Nothing is written to Procore until Jonathan clicks Approve, and an agent cannot approve its own request.
+- **AI engines:** when Nelson OS runs Claude or ChatGPT, only Nelson OS tools are available: Claude.ai connectors and every other MCP server on the computer (an email plugin, for example) are switched off for that run, and shell and file-writing tools are disabled.
+- Tests in `test/guardrails.test.js` cover each of these.
 
 ## Security and data
 

@@ -13,7 +13,7 @@ const NAV = [
   ['#/inbox', 'Inbox', Icon.inbox, 'inbox'],
   ['#/projects', 'Projects', Icon.projects, 'projects'],
   ['#/ask', 'Ask', Icon.ask, 'ask'],
-  ['#/drafts', 'Drafts', Icon.drafts, 'drafts'],
+  ['#/drafts', 'Approvals', Icon.drafts, 'drafts'],
   ['#/activity', 'Activity', Icon.activity, 'activity'],
   ['#/rules', 'Local rules', Icon.rules, 'rules'],
   ['#/connections', 'Connections', Icon.plug, 'connections'],
@@ -48,6 +48,7 @@ function Shell({ state, children, section, counts }) {
       </div>
       <div class="foot">
         <div class="row"><span class=${`dot ${engine.engine === 'none' ? 'warn' : 'on'}`}></span>AI: ${engine.label}</div>
+        <div class="row" style="margin-top:4px"><span class=${`dot ${state.procore?.connected ? 'on' : 'off'}`}></span>${state.procore?.connected ? (state.procore.sync.running ? 'Syncing Procore' : 'Procore connected') : 'Procore not connected'}</div>
         <div class="row" style="margin-top:4px"><span class=${`dot ${state.microsoft.connected ? 'on' : 'off'}`}></span>${state.microsoft.connected ? (sync.running ? `Syncing: ${sync.phase}` : 'Outlook connected') : 'Outlook not connected'}</div>
       </div>
     </nav>
@@ -81,7 +82,7 @@ function App() {
       setNeedLogin(false);
       if (s.setupComplete) {
         const [b, d] = await Promise.all([api('/briefing'), api('/drafts')]);
-        setCounts({ high: b.counts.high, drafts: d.length });
+        setCounts({ high: b.counts.high, drafts: d.length + (s.procore?.pendingApprovals || 0) });
       }
     } catch (e) {
       if (/passcode/i.test(e.message)) setNeedLogin(true); else toastErr(e);

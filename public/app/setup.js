@@ -1,7 +1,7 @@
 import { html, useState, useEffect, api, useApi, useApp, useRoute, toast, toastErr, Busy } from './lib.js';
 import { AppTile } from './connections.js';
 
-const STEPS = ['About you', 'Your AI', 'Outlook', 'First look', 'Start with your computer'];
+const STEPS = ['About you', 'Your AI', 'Procore', 'Outlook', 'First look', 'Start with your computer'];
 const store = {
   get: () => { try { return Number(localStorage.getItem('nos.setupStep')) || 0; } catch { return 0; } },
   set: (n) => { try { localStorage.setItem('nos.setupStep', String(n)); } catch { /* private mode */ } },
@@ -40,6 +40,16 @@ function StepAI({ next }) {
     <div class="row" style="margin-top:26px"><button class="btn primary lg" onClick=${next}>${connected ? 'Continue' : 'Skip for now'}</button></div>`;
 }
 
+function StepProcore({ next }) {
+  const { data, reload } = useApi('/connections');
+  const app = data?.apps.find((a) => a.id === 'procore');
+  useEffect(() => { const id = setInterval(reload, 4000); return () => clearInterval(id); }, []);
+  return html`<h2>Connect Procore</h2>
+    <p class="lead">Procore is where your RFIs, submittals, schedule and project records live. Nelson OS reads them every 15 minutes and connects them to your email and drawings. It never changes anything in Procore unless you approve it first.</p>
+    <div class="tiles" style="max-width:760px">${app && html`<${AppTile} app=${app} onChange=${reload} />`}</div>
+    <div class="row" style="margin-top:26px"><button class="btn primary lg" onClick=${next}>${app?.connected ? 'Continue' : 'Skip for now'}</button></div>`;
+}
+
 function StepOutlook({ next }) {
   const { data, reload } = useApi('/connections');
   const outlook = data?.apps.find((a) => a.id === 'outlook');
@@ -56,7 +66,9 @@ function StepImport({ next }) {
   useEffect(() => { const id = setInterval(refresh, 2500); return () => clearInterval(id); }, []);
   const pct = s.running ? (s.total ? 40 + Math.round((s.done / s.total) * 55) : Math.min(38, 5 + s.fetched / 15)) : s.phase === 'done' ? 100 : 0;
   const demo = async () => { setBusy(true); try { await api('/demo/load', { method: 'POST' }); await refresh(); toast('Sample projects loaded'); } catch (e) { toastErr(e); } finally { setBusy(false); } };
-  return html`<h2>${state.microsoft.connected ? 'Reading your last 30 days' : 'Take a first look'}</h2>
+  const pc = state.procore;
+  return html`<h2>${state.microsoft.connected || pc.connected ? 'Bringing in your projects' : 'Take a first look'}</h2>
+    ${pc.connected && html`<div class="row small" style="margin-bottom:14px"><span class=${pc.sync.running ? 'spinner' : 'dot on'}></span><span>Procore: ${pc.sync.running ? pc.sync.phase : pc.lastSync ? `${pc.sync.counts?.projects ?? ''} projects, ${pc.sync.counts?.rfis ?? ''} RFIs, ${pc.sync.counts?.submittals ?? ''} submittals synced` : pc.company ? 'starting…' : 'choose your company on the Procore step'}</span></div>`}
     ${state.microsoft.connected ? html`
       <p class="lead">This runs in the background. You can continue while it works.</p>
       <div style="max-width:620px" class="stack">
@@ -66,10 +78,10 @@ function StepImport({ next }) {
         ${s.error && html`<div class="banner">${s.error}</div>`}
         ${!s.running && s.phase !== 'done' && html`<button class="btn" onClick=${() => api('/sync/mail', { method: 'POST' }).then(refresh).catch(toastErr)}>Start reading</button>`}
       </div>` : html`
-      <p class="lead">Outlook isn't connected yet. You can explore Nelson OS with three sample projects (clearly marked, removable in Settings) and connect Outlook later.</p>`}
-    ${state.projects.length > 0 && html`<div style="margin-top:22px;max-width:620px"><h3 style="margin-bottom:8px">Projects found</h3><div class="items">${state.projects.map((p) => html`<div class="item" style="cursor:default"><b>${p.name}</b><span class="muted small">${[p.address, p.city].filter(Boolean).join(', ')}</span>${p.review ? html`<span class="chip review" style="margin-left:auto">Found in email</span>` : null}${p.source === 'demo' ? html`<span class="chip" style="margin-left:auto">Sample</span>` : null}</div>`)}</div></div>`}
+      <p class="lead">${pc.connected ? 'Outlook isn’t connected yet; Procore projects appear below as they sync. ' : 'Outlook isn’t connected yet. '}You can also explore Nelson OS with three sample projects (clearly marked, removable in Settings) and connect Outlook later.</p>`}
+    ${state.projects.length > 0 && html`<div style="margin-top:22px;max-width:620px"><h3 style="margin-bottom:8px">Projects found</h3><div class="items">${state.projects.map((p) => html`<div class="item" style="cursor:default"><b>${p.name}</b><span class="muted small">${[p.address, p.city].filter(Boolean).join(', ')}</span>${p.review ? html`<span class="chip review" style="margin-left:auto">Found in email</span>` : null}${p.source === 'demo' ? html`<span class="chip" style="margin-left:auto">Sample</span>` : null}${p.source === 'procore' ? html`<span class="chip ok" style="margin-left:auto">Procore</span>` : null}</div>`)}</div></div>`}
     <div class="row" style="margin-top:26px">
-      ${!state.microsoft.connected && !state.demo && html`<${Busy} class="btn" on=${busy} onClick=${demo}>Load sample projects</${Busy}>`}
+      ${!state.microsoft.connected && !pc.connected && !state.demo && html`<${Busy} class="btn" on=${busy} onClick=${demo}>Load sample projects</${Busy}>`}
       <button class="btn primary lg" onClick=${next}>Continue</button>
     </div>`;
 }
@@ -109,13 +121,13 @@ export function Setup() {
   useEffect(() => { store.set(step); }, [step]);
   const next = () => setStep((s) => Math.min(s + 1, STEPS.length - 1));
   const finish = async () => { toast('You’re set up'); location.hash = '#/'; await refresh(); };
-  const views = [html`<${StepYou} next=${next} />`, html`<${StepAI} next=${next} />`, html`<${StepOutlook} next=${next} />`, html`<${StepImport} next=${next} />`, html`<${StepComputer} finish=${finish} />`];
+  const views = [html`<${StepYou} next=${next} />`, html`<${StepAI} next=${next} />`, html`<${StepProcore} next=${next} />`, html`<${StepOutlook} next=${next} />`, html`<${StepImport} next=${next} />`, html`<${StepComputer} finish=${finish} />`];
   return html`<div class="setup">
     <aside class="setup-side">
       <img class="logo" src="/assets/nelson-logo.png" alt="Nelson Group" />
       <div><h1>Nelson OS</h1><p style="margin-top:6px">Construction operations for every active project.</p></div>
       <ol class="setup-steps">${STEPS.map((s, i) => html`<li class=${i === step ? 'on' : i < step ? 'done' : ''}><a href="#/setup" style="text-decoration:none;color:inherit" onClick=${(e) => { e.preventDefault(); if (i < step) setStep(i); }}>${s}</a></li>`)}</ol>
-      <p class="why small" style="margin-top:auto">Your data stays on this computer. Email access is read-only, and nothing is sent without you clicking send in Outlook.</p>
+      <p class="why small" style="margin-top:auto">Your data stays on this computer. Email access is read-only: nothing is sent unless you press Send in Outlook, and nothing changes in Procore unless you approve it.</p>
     </aside>
     <section class="setup-main">${views[step]}</section>
   </div>`;

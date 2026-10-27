@@ -10,6 +10,28 @@ export const REDIRECT_URI = `${BASE_URL}/oauth/microsoft/callback`;
 const MAIL_SCOPES = ['offline_access', 'openid', 'profile', 'email', 'User.Read', 'Mail.Read', 'Calendars.Read'];
 const FILE_SCOPES = ['Files.Read.All'];
 
+// ---------- no-send guardrail ----------
+// Nelson OS reads Outlook; it never sends, replies, forwards, moves, edits or deletes mail.
+// Every Graph call passes through assertReadOnly, so this holds even if a token were ever
+// granted more permission than Nelson OS asks for. Email leaves only when Jonathan presses
+// Send in Outlook.
+const FORBIDDEN_SCOPE = /send|readwrite|\.write|full_access/i;
+const SEND_PATH = /\/(sendmail|send|reply|replyall|forward|createreply|createreplyall|createforward|move|copy)(\/|$)/i;
+const READ_ONLY_POSTS = [/^\/search\/query$/];
+
+export function assertReadOnly(method, url) {
+  const path = String(url).replace(/^https:\/\/graph\.microsoft\.com\/(v1\.0|beta)/i, '').split('?')[0];
+  if (SEND_PATH.test(path)) throw Object.assign(new Error('Blocked: Nelson OS never sends, replies to, forwards or moves email. Open the draft in Outlook and send it yourself.'), { status: 403, code: 'SEND_BLOCKED' });
+  if (method === 'GET') return;
+  if (method === 'POST' && READ_ONLY_POSTS.some((re) => re.test(path))) return;
+  throw Object.assign(new Error(`Blocked: Nelson OS only reads from Outlook (${method} ${path}).`), { status: 403, code: 'SEND_BLOCKED' });
+}
+
+export function assertReadOnlyScopes(scopes) {
+  const bad = scopes.filter((s) => FORBIDDEN_SCOPE.test(s));
+  if (bad.length) throw new Error(`Refusing to request write permissions: ${bad.join(', ')}`);
+}
+
 const pending = new Map();
 const b64url = (buf) => Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
@@ -42,6 +64,7 @@ export function authUrl({ files = false, returnTo = '/' } = {}) {
   const granted = getSetting('microsoft.scopes', []) || [];
   const wantFiles = files || granted.some((s) => /files\.read/i.test(s));
   const scopes = [...MAIL_SCOPES, ...(wantFiles ? FILE_SCOPES : [])];
+  assertReadOnlyScopes(scopes);
   pending.set(state, { verifier, scopes, returnTo, at: Date.now() });
   for (const [k, v] of pending) if (Date.now() - v.at > 15 * 60 * 1000) pending.delete(k);
   const q = new URLSearchParams({
@@ -105,6 +128,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** GET (or POST) against Microsoft Graph with retry on throttling. */
 export async function graph(pathOrUrl, { method = 'GET', body, headers = {}, raw = false } = {}) {
   const url = pathOrUrl.startsWith('http') ? pathOrUrl : `${GRAPH}${pathOrUrl}`;
+  assertReadOnly(method.toUpperCase(), url);
   for (let attempt = 0; attempt < 5; attempt++) {
     const res = await fetch(url, {
       method,

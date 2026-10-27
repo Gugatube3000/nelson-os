@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { APP_ROOT, DATA_DIR, PORT } from '../paths.js';
-import { runCli } from './cli.js';
+import { CLAUDE_LOCKDOWN_ENV, codexLockdownArgs, runCli } from './cli.js';
 import { toolLabel } from './tools.js';
 
 const WORKDIR = path.join(DATA_DIR, 'agent-workspace');
@@ -32,6 +32,7 @@ export async function runClaudeAgent({ prompt, sessionId, onStep }) {
   const r = await runCli('claude', args, {
     input: prompt,
     cwd: WORKDIR,
+    env: CLAUDE_LOCKDOWN_ENV,
     timeoutMs: 15 * 60 * 1000,
     onLine: (line) => {
       let ev;
@@ -56,7 +57,7 @@ export async function runClaudeAgent({ prompt, sessionId, onStep }) {
 export async function runCodexAgent({ prompt, onStep }) {
   const outFile = path.join(os.tmpdir(), `nelson-os-codex-${process.pid}-${Date.now()}.txt`);
   const lit = (s) => `'${s}'`; // TOML literal string: backslashes in Windows paths stay as-is
-  const args = ['exec', '--json', '--skip-git-repo-check', '--ephemeral', '-s', 'read-only',
+  const args = ['exec', '--json', '--skip-git-repo-check', '--ephemeral', '-s', 'read-only', ...(await codexLockdownArgs({ keep: ['nelson-os'] })),
     '-c', `mcp_servers.nelson-os.command=${lit(MCP_SERVER.command)}`,
     '-c', `mcp_servers.nelson-os.args=[${MCP_SERVER.args.map(lit).join(', ')}]`,
     '-c', `mcp_servers.nelson-os.env={ NELSON_OS_PORT = ${lit(String(PORT))} }`,
@@ -87,7 +88,7 @@ export async function runCodexAgent({ prompt, onStep }) {
 /** Let Claude Code read local files (drawing pages) and answer. */
 export async function askWithLocalAgent({ prompt, readDir }) {
   const r = await runCli('claude', ['-p', '--output-format', 'json', '--max-turns', '15', '--tools', 'Read', '--allowedTools', 'Read',
-    '--add-dir', readDir, '--strict-mcp-config', '--no-session-persistence'], { input: prompt, cwd: readDir, timeoutMs: 10 * 60 * 1000 });
+    '--add-dir', readDir, '--strict-mcp-config', '--no-session-persistence'], { input: prompt, cwd: readDir, env: CLAUDE_LOCKDOWN_ENV, timeoutMs: 10 * 60 * 1000 });
   const start = r.stdout.indexOf('{');
   const out = JSON.parse(r.stdout.slice(start));
   if (out.is_error) throw new Error(out.result || 'Claude could not read the drawings.');

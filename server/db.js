@@ -110,9 +110,25 @@ CREATE TABLE IF NOT EXISTS activity_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, actor TEXT, kind TEXT, project_id TEXT, title TEXT,
   detail TEXT, why TEXT, sources_json TEXT, entity_type TEXT, entity_id TEXT);
 
+-- Changes to outside systems (Procore) wait here until Jonathan approves them.
+CREATE TABLE IF NOT EXISTS approvals (
+  id TEXT PRIMARY KEY, system TEXT, project_id TEXT, title TEXT, detail TEXT, method TEXT, path TEXT,
+  path_params_json TEXT, body_json TEXT, notifies TEXT, reason TEXT, status TEXT DEFAULT 'pending',
+  result TEXT, ${PROVENANCE}, decided_at TEXT);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
   kind UNINDEXED, ref_id UNINDEXED, project_id UNINDEXED, title, body, tokenize = 'porter unicode61');
 `);
+
+// Columns added after the first release; safe to run on every start.
+function addColumn(table, column, type) {
+  const has = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+  if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+}
+for (const t of ['projects', 'rfis', 'submittals', 'schedule_items', 'changes']) {
+  addColumn(t, 'procore_id', 'TEXT');
+  addColumn(t, 'ext_url', 'TEXT');
+}
 
 export const now = () => new Date().toISOString();
 export const today = () => new Date().toISOString().slice(0, 10);
@@ -146,6 +162,7 @@ export const ENTITIES = {
   inspections: { prefix: 'ins', json: [] },
   documents: { prefix: 'doc', json: [] },
   drafts: { prefix: 'drf', json: ['to_json', 'cc_json', 'attachments_json'] },
+  approvals: { prefix: 'apr', json: ['path_params_json', 'body_json'] },
 };
 
 const columnCache = new Map();

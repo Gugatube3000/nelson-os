@@ -6,18 +6,19 @@ import { engineStatus } from './ai/engine.js';
 import { cliStatus, installCli, jobs, resolveBin, startLogin, submitLoginCode } from './ai/cli.js';
 export { submitLoginCode };
 import * as ms from './sync/microsoft.js';
+import * as procore from './sync/procore.js';
 import { mcpStatus, registerMcp } from '../scripts/lib/system.mjs';
 
 export const CATALOG = [
   { id: 'claude', group: 'ai', name: 'Claude', logo: 'claude.svg', blurb: 'Use your Claude Pro or Max subscription. Reads drawings, drafts RFIs and replies.', kind: 'subscription' },
   { id: 'codex', group: 'ai', name: 'ChatGPT', logo: 'openai.svg', blurb: 'Use your ChatGPT Plus or Pro subscription through Codex.', kind: 'subscription' },
   { id: 'anthropic', group: 'ai', name: 'Claude API key', logo: 'anthropic.svg', blurb: 'Pay-per-use key from console.anthropic.com. Fastest; best for heavy drawing review.', kind: 'key' },
+  { id: 'procore', group: 'data', name: 'Procore', logo: 'procore.svg', blurb: 'RFIs, submittals, schedule and project data. Changes in Procore only happen after you approve them.', kind: 'procore' },
   { id: 'outlook', group: 'data', name: 'Outlook', logo: 'outlook.svg', blurb: 'Read-only email and calendar. Nelson OS never sends or deletes mail.', kind: 'oauth' },
   { id: 'onedrive', group: 'data', name: 'OneDrive & SharePoint', logo: 'onedrive.svg', blurb: 'Find drawing sets and specs and add them to a project (read-only).', kind: 'oauth' },
   { id: 'drawings', group: 'data', name: 'Upload drawings', logo: 'folder.svg', blurb: 'Drop PDF drawing sets, specs and takeoffs onto any project.', kind: 'builtin' },
   { id: 'mcp', group: 'use', name: 'Claude Desktop, Claude Code & Codex', logo: 'mcp.svg', blurb: 'Ask about your projects from the Claude or Codex apps too.', kind: 'mcp' },
   { id: 'phone', group: 'use', name: 'Phone at the jobsite', logo: 'phone.svg', blurb: 'Open Nelson OS on your phone with a passcode.', kind: 'builtin' },
-  { id: 'procore', group: 'later', name: 'Procore', logo: 'procore.svg', blurb: 'Sync RFIs and submittals with Procore.', kind: 'planned' },
   { id: 'googledrive', group: 'later', name: 'Google Drive', logo: 'googledrive.svg', blurb: 'Import drawings from Google Drive.', kind: 'planned' },
   { id: 'dropbox', group: 'later', name: 'Dropbox', logo: 'dropbox.svg', blurb: 'Import drawings from Dropbox.', kind: 'planned' },
   { id: 'quickbooks', group: 'later', name: 'QuickBooks', logo: 'quickbooks.svg', blurb: 'Pull committed costs and invoices into budgets.', kind: 'planned' },
@@ -31,10 +32,12 @@ export async function connectionStatus() {
   const m = ms.status();
   const mcp = mcpStatus();
   const phone = getSetting('phone.enabled', false);
+  const pc = procore.status();
   const state = {
     claude: { connected: engine.clis.claude.loggedIn, installed: engine.clis.claude.installed, detail: engine.clis.claude.loggedIn ? [engine.clis.claude.account, engine.clis.claude.plan && `${engine.clis.claude.plan} plan`].filter(Boolean).join(' · ') : engine.clis.claude.installed ? 'Installed, not signed in' : null },
     codex: { connected: engine.clis.codex.loggedIn, installed: engine.clis.codex.installed, detail: engine.clis.codex.loggedIn ? engine.clis.codex.method : engine.clis.codex.installed ? 'Installed, not signed in' : null },
     anthropic: { connected: engine.hasKey, detail: engine.hasKey ? `Model ${engine.model}` : null },
+    procore: { connected: pc.connected, configured: pc.configured, needsCompany: pc.connected && !pc.company, companies: pc.companies, detail: pc.connected ? [pc.account?.name, pc.company?.name || 'choose a company', pc.env === 'sandbox' && 'sandbox'].filter(Boolean).join(' · ') : pc.configured ? null : 'Needs the one-time Procore app setup', syncing: pc.sync.running, lastSync: pc.lastSync },
     outlook: { connected: m.connected, configured: m.configured, detail: m.connected ? m.account?.email : m.configured ? null : 'Needs the one-time Microsoft app setup' },
     onedrive: { connected: m.connected && m.files, configured: m.configured, detail: m.connected && m.files ? 'Search from any project’s Documents tab' : null },
     drawings: { connected: true, detail: 'Always on' },
@@ -115,6 +118,7 @@ export async function useEngine(id) {
 export async function disconnect(id) {
   if (id === 'anthropic') setSecret('anthropic_api_key', null);
   if (id === 'outlook' || id === 'onedrive') ms.disconnect();
+  if (id === 'procore') procore.disconnect();
   if (id === 'phone') setSetting('phone.enabled', false);
   if (ENGINE_FOR[id] && getSetting('ai.engine') === ENGINE_FOR[id]) setSetting('ai.engine', 'auto');
   logActivity({ actor: 'user', kind: 'disconnect', title: `Disconnected ${CATALOG.find((a) => a.id === id)?.name || id}` });

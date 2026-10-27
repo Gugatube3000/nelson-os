@@ -159,7 +159,7 @@ export function runBin(bin, args) {
   const isCmd = process.platform === 'win32' && /\.(cmd|bat)$/i.test(bin);
   const quote = (a) => (/[\s"&|<>^()]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a);
   const r = isCmd
-    ? spawnSync(`"${bin}"`, args.map(quote), { shell: true, encoding: 'utf8', windowsHide: true })
+    ? spawnSync([`"${bin}"`, ...args.map(quote)].join(' '), { shell: true, encoding: 'utf8', windowsHide: true })
     : spawnSync(bin, args, { encoding: 'utf8', windowsHide: true });
   return { ok: r.status === 0, out: `${r.stdout || ''}${r.stderr || ''}`.trim() };
 }

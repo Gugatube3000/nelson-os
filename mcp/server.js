@@ -35,7 +35,7 @@ async function ensureApp() {
 
 const server = new Server({ name: 'nelson-os', version: '1.0.0' }, {
   capabilities: { tools: {} },
-  instructions: 'Nelson OS is the construction operations system for Nelson Group (Greater Boston developer and builder). Use these tools to see what needs attention, look up projects, email, drawings, RFIs, submittals, orders, schedules, budgets and permits, and to prepare drafts. Nothing is ever sent from these tools; drafts wait for the user in Nelson OS.',
+  instructions: 'Nelson OS is the construction operations system for Nelson Group (Greater Boston developer and builder). Use these tools to see what needs attention, look up projects, email, drawings, RFIs, submittals, orders, schedules, budgets and permits, and to prepare drafts. Nothing is ever sent from these tools: drafts wait for Jonathan in Nelson OS, and Procore changes wait for Jonathan to approve them. Never send, reply to or forward email or messages with any other tool or app on Jonathan\'s behalf; prepare a Nelson OS draft instead.',
 });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {

@@ -19,6 +19,7 @@ import { buildEml, composeLinks, draftAttachments, rfiNumber, rfiPdf, transmitta
 import { addDocument, askDrawings, documentPages, extractPage, indexDocument } from './docs/pdf.js';
 import * as ms from './sync/microsoft.js';
 import { syncMail, syncState } from './sync/mail.js';
+import * as procore from './sync/procore.js';
 import { suggestReply, triagePending } from './sync/triage.js';
 import { clearDemo, hasDemo, loadDemo } from './demo.js';
 import { connectCli, connectionStatus, connectMcp, disconnect, saveAnthropicKey, submitLoginCode, useEngine } from './integrations.js';
@@ -87,6 +88,7 @@ app.get('/api/state', wrap(async (req, res) => {
     microsoft: ms.status(),
     sync: syncState,
     demo: hasDemo(),
+    procore: procore.status(),
     local: isLocal(req),
     projects: list('projects', { status: 'active' }, { order: 'name' }).map((p) => ({ id: p.id, name: p.name, address: p.address, city: p.city, review: p.review, source: p.source })),
   });
@@ -113,6 +115,7 @@ app.post('/api/connections/:id/connect', wrap(async (req, res) => {
   const { id } = req.params;
   if (id === 'claude' || id === 'codex') return res.json({ job: connectCli(id) });
   if (id === 'anthropic') { await saveAnthropicKey(req.body?.apiKey); return res.json({ ok: true }); }
+  if (id === 'procore') return res.json({ url: await procore.startAuth({ returnTo: req.body?.returnTo || '/#/connections' }) });
   if (id === 'outlook' || id === 'onedrive') return res.json({ url: ms.authUrl({ files: id === 'onedrive', returnTo: req.body?.returnTo || '/#/connections' }) });
   if (id === 'mcp') return res.json({ result: connectMcp() });
   res.status(400).json({ error: 'This app can’t be connected yet.' });
@@ -121,6 +124,20 @@ app.post('/api/connections/:id/code', (req, res) => { submitLoginCode(req.params
 app.get('/api/connections/jobs/:key', (req, res) => res.json(cliJobs[req.params.key] || { state: 'idle' }));
 app.post('/api/connections/:id/use', wrap(async (req, res) => res.json(await useEngine(req.params.id))));
 app.post('/api/connections/:id/disconnect', wrap(async (req, res) => res.json(await disconnect(req.params.id))));
+app.post('/api/connections/procore/app', (req, res) => res.json(procore.saveApp(req.body || {})));
+app.post('/api/connections/procore/company', (req, res) => {
+  const company = procore.chooseCompany(req.body?.companyId);
+  procore.syncProcore().catch(() => {});
+  res.json(company);
+});
+app.post('/api/procore/sync', (req, res) => { procore.syncProcore().catch(() => {}); res.json(procore.syncState); });
+app.get('/api/procore/status', (req, res) => res.json(procore.status()));
+
+// ---------- approvals (Procore changes wait here for Jonathan) ----------
+app.get('/api/approvals', (req, res) => res.json(list('approvals', { status: req.query.status || 'pending' }).map((a) => ({ ...a, project: nameOf(a.project_id) }))));
+app.post('/api/approvals/:id/approve', wrap(async (req, res) => res.json(await procore.decideApproval(req.params.id, true, { by: 'user' }))));
+app.post('/api/approvals/:id/decline', wrap(async (req, res) => res.json(await procore.decideApproval(req.params.id, false, { by: 'user' }))));
+
 app.post('/api/connections/microsoft/app', (req, res) => {
   const clientId = String(req.body?.clientId || '').trim();
   if (!/^[0-9a-f-]{36}$/i.test(clientId)) return res.status(400).json({ error: 'The Application (client) ID is a 36-character GUID.' });
@@ -535,6 +552,18 @@ async function listen() {
 }
 
 let syncTimer = null;
+let procoreTimer = null;
+function scheduleProcore() {
+  clearInterval(procoreTimer);
+  procoreTimer = setInterval(async () => {
+    const s = procore.status();
+    if (!s.connected) return;
+    try { await procore.accessToken(); } catch (err) { console.warn('[procore] token refresh failed:', err.message); return; }
+    // Full sync every 15 minutes; the token is kept fresh every 5.
+    if (s.company && !s.sync.running && (!s.lastSync || Date.now() - new Date(s.lastSync).getTime() > 15 * 60000)) procore.syncProcore().catch(() => {});
+  }, 5 * 60000);
+}
+
 function scheduleSync() {
   clearInterval(syncTimer);
   const minutes = getSetting('sync.intervalMinutes', CONFIG.sync?.intervalMinutes || 10);
@@ -554,6 +583,7 @@ try {
 }
 console.log(`Nelson OS ${VERSION} running at http://localhost:${PORT}  (data: ${DATA_DIR})`);
 scheduleSync();
+scheduleProcore();
 setTimeout(() => { if (ms.status().connected && !syncState.running) syncMail().catch(() => {}); }, 20000);
 // Any document still marked "indexing" was interrupted by a restart.
 for (const d of db.prepare("SELECT id FROM documents WHERE status = 'indexing'").all()) indexDocument(d.id).catch(() => {});

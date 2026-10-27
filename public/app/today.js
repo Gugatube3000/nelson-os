@@ -67,6 +67,7 @@ export function Today() {
 
   return html`<div class="page">
     ${state.demo && html`<div class="banner info"><span class="chip">Sample data</span><span class="grow">You're looking at three sample projects. Connect Outlook to bring in your real ones; remove the samples anytime in Settings.</span></div>`}
+    ${state.procore?.pendingApprovals > 0 && html`<div class="banner"><span class="grow"><b>${state.procore.pendingApprovals} Procore change${state.procore.pendingApprovals === 1 ? '' : 's'}</b> waiting for your approval. Nothing changes in Procore until you approve.</span><a class="btn sm primary" href="#/drafts">Review</a></div>`}
     ${state.sync.running && html`<div class="banner info"><span class="spinner"></span><span>Reading Outlook: ${state.sync.phase}${state.sync.total ? ` (${state.sync.done} of ${state.sync.total})` : ''}</span></div>`}
     <div class="titleblock" role="group" aria-label="Today at a glance">
       <div><div class="k">${greet}${first ? `, ${first}` : ''}</div><div class="v date">${fmtDate(b.date, { weekday: 'long', month: 'long', day: 'numeric' })}</div></div>

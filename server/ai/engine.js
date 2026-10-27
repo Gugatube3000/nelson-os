@@ -7,7 +7,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { getSetting } from '../db.js';
 import { CONFIG } from '../paths.js';
 import { getSecret } from '../secrets.js';
-import { cliStatus, runCli } from './cli.js';
+import { CLAUDE_LOCKDOWN_ENV, cliStatus, codexLockdownArgs, runCli } from './cli.js';
 
 let statusCache = { at: 0, value: null };
 
@@ -82,7 +82,7 @@ export function parseJson(text) {
 }
 
 async function viaClaudeCli(prompt) {
-  const r = await runCli('claude', ['-p', '--output-format', 'json', '--max-turns', '1', '--tools', '', '--strict-mcp-config', '--no-session-persistence'], { input: prompt });
+  const r = await runCli('claude', ['-p', '--output-format', 'json', '--max-turns', '1', '--tools', '', '--strict-mcp-config', '--no-session-persistence'], { input: prompt, env: CLAUDE_LOCKDOWN_ENV });
   if (r.code !== 0) throw new Error(`Claude Code CLI failed: ${(r.stderr || r.stdout).slice(0, 300)}`);
   const out = parseJson(r.stdout);
   if (out.is_error) throw new Error(`Claude Code CLI: ${out.result || 'error'}`);
@@ -91,7 +91,7 @@ async function viaClaudeCli(prompt) {
 
 async function viaCodexCli(prompt) {
   const outFile = path.join(os.tmpdir(), `nelson-os-codex-${process.pid}-${Date.now()}.txt`);
-  const r = await runCli('codex', ['exec', '--skip-git-repo-check', '--ephemeral', '-s', 'read-only', '-o', outFile, '-'], { input: prompt });
+  const r = await runCli('codex', ['exec', '--skip-git-repo-check', '--ephemeral', '-s', 'read-only', ...(await codexLockdownArgs()), '-o', outFile, '-'], { input: prompt });
   try {
     if (r.code !== 0) throw new Error(`Codex CLI failed: ${(r.stderr || r.stdout).slice(-300)}`);
     return fs.readFileSync(outFile, 'utf8');

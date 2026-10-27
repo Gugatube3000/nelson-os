@@ -148,6 +148,7 @@ export function RecordDrawer({ entity, id, projectId, initial, onClose, onSaved 
 
   return html`<${Drawer} title=${isNew ? `New ${cfg.one.toLowerCase()}` : cfg.title_of(f)} sub=${!isNew && f.created_by === 'agent' ? 'Added by Nelson OS' : null} onClose=${onClose}
     foot=${html`${!isNew && html`<button class="btn ghost" onClick=${del}>Remove</button>`}<span class="grow"></span><button class="btn" onClick=${onClose}>Cancel</button><${Busy} class="btn primary" on=${busy === 'save'} onClick=${save}>Save</${Busy}>`}>
+    ${f.source === 'procore' ? html`<div class="banner info"><span class="chip ok">Procore</span><span class="grow">Synced from Procore every 15 minutes. Edits here stay in Nelson OS; ask Nelson OS to propose a change in Procore for your approval.</span>${f.ext_url && html`<a class="btn sm" href=${f.ext_url} target="_blank" rel="noopener">Open in Procore</a>`}</div>` : null}
     ${f.review ? html`<div class="banner"><span class="chip review">Found in email</span><span class="grow">Nelson OS found this in email. Check it, then confirm it.</span><button class="btn sm primary" onClick=${confirm}>Confirm</button></div>` : null}
     ${extra && html`<div class="row wrap" style="margin-bottom:16px">${extra}</div>`}
     ${f.thread_id && html`<p class="small" style="margin-bottom:12px"><a href=${`#/inbox/${encodeURIComponent(f.thread_id)}`}>Open the email this came from</a></p>`}
@@ -181,7 +182,7 @@ export function LogTable({ entity, projectId, openId, onChanged, compact }) {
     </div>
     ${loading && !data ? html`<${Loading} />` : rows.length ? html`<div class="table-wrap"><table class="log cardify">
       <thead><tr>${cfg.cols.map(([h]) => html`<th>${h}</th>`)}</tr></thead>
-      <tbody>${rows.map((r) => html`<tr onClick=${() => setOpen({ id: r.id })}>${cfg.cols.map(([h, fn, isLate], i) => html`<td data-label=${h} class=${isLate?.(r) ? 'late' : ''}>${fn(r) ?? '—'}${i === 1 && r.review ? html` <span class="chip review">Found in email</span>` : null}${i === 1 && r.created_by === 'agent' && !r.review ? html` <span class="chip">By Nelson OS</span>` : null}</td>`)}</tr>`)}</tbody>
+      <tbody>${rows.map((r) => html`<tr onClick=${() => setOpen({ id: r.id })}>${cfg.cols.map(([h, fn, isLate], i) => html`<td data-label=${h} class=${isLate?.(r) ? 'late' : ''}>${fn(r) ?? '—'}${i === 1 && r.review ? html` <span class="chip review">Found in email</span>` : null}${i === 1 && r.created_by === 'agent' && !r.review ? html` <span class="chip">By Nelson OS</span>` : null}${i === 1 && r.source === 'procore' ? html` <span class="chip ok">Procore</span>` : null}</td>`)}</tr>`)}</tbody>
     </table></div>` : html`<div class="items"><div class="empty">${compact ? 'None yet.' : html`<b>No ${cfg.title.toLowerCase()} yet</b>Add one, or ask Nelson OS to create it from an email or drawing.`}</div></div>`}
     ${open && html`<${RecordDrawer} entity=${entity} id=${open.id} projectId=${projectId} onClose=${() => setOpen(null)} onSaved=${changed} />`}
   </section>`;

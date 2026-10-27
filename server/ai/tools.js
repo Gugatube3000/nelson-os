@@ -6,6 +6,7 @@ import { budgetSummary, projectCounts, resolveProject } from '../domain/projects
 import { findRequirements } from '../domain/requirements.js';
 import { computeRisks, releaseBy, returnDue, submitBy } from '../domain/risks.js';
 import { askDrawings } from '../docs/pdf.js';
+import * as procore from '../sync/procore.js';
 
 export const RECORD_TYPES = ['rfis', 'submittals', 'orders', 'takeoffs', 'schedule_items', 'changes', 'permits', 'inspections', 'actions', 'contacts', 'projects'];
 const SEARCH_KINDS = ['email', 'doc_page', ...RECORD_TYPES];
@@ -65,7 +66,7 @@ export const TOOLS = [
     description: 'List log records of one type, optionally for one project and status.',
     input_schema: {
       type: 'object',
-      properties: { type: { type: 'string', enum: [...RECORD_TYPES, 'documents', 'drafts', 'threads'] }, project: projectProp, status: { type: 'string' } },
+      properties: { type: { type: 'string', enum: [...RECORD_TYPES, 'documents', 'drafts', 'threads', 'approvals'] }, project: projectProp, status: { type: 'string' } },
       required: ['type'],
       additionalProperties: false,
     },
@@ -129,6 +130,51 @@ export const TOOLS = [
         reason: { type: 'string' },
       },
       required: ['to', 'subject', 'body', 'reason'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'procore_find_endpoints',
+    description: 'Search the Procore API catalog (3,155 endpoints) for the endpoint you need, e.g. "rfi", "submittal", "daily log", "punch", "commitment", "budget". Returns operationIds, methods and paths. No Procore request is made.',
+    input_schema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false },
+  },
+  {
+    name: 'procore_endpoint_details',
+    description: 'Full parameter and response schema for one Procore endpoint, by operationId from procore_find_endpoints. Check this before procore_read or procore_request_change.',
+    input_schema: { type: 'object', properties: { operation_id: { type: 'string' } }, required: ['operation_id'], additionalProperties: false },
+  },
+  {
+    name: 'procore_read',
+    description: 'Read live data from Procore (GET only): RFIs, submittals, daily logs, punch items, drawings, budgets, commitments, directory, and anything else in the catalog. Procore is the system of record; RFIs, submittals and the schedule are also synced into Nelson OS logs (source "procore", with procore_id).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Endpoint path, e.g. /rest/v1.0/projects/{project_id}/rfis' },
+        path_params: { type: 'object', description: 'e.g. {"project_id": "12345"} (Procore ids, not Nelson OS ids)' },
+        query_params: { type: 'object', description: 'Filters, e.g. {"filters__status": "open"}' },
+        page: { type: 'integer' },
+        per_page: { type: 'integer' },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'procore_request_change',
+    description: 'Ask Jonathan to approve a change in Procore (create a draft RFI, update a submittal, add a daily log entry, etc.). This NEVER changes Procore by itself: it creates an approval card that Jonathan approves or declines in Nelson OS. Procore may email the people involved when a change is applied, so say who in `notifies`. Create RFIs with "draft": true unless Jonathan explicitly asked to issue it.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        method: { type: 'string', enum: ['POST', 'PATCH', 'PUT', 'DELETE'] },
+        path: { type: 'string' },
+        path_params: { type: 'object' },
+        body: { type: 'object', description: 'Request body exactly as the endpoint expects (see procore_endpoint_details)' },
+        title: { type: 'string', description: 'Plain English, e.g. "Create draft RFI-005 in Procore: Unit 4 vanity width"' },
+        notifies: { type: 'string', description: 'Who Procore may email when this is applied, or "No one (draft)"' },
+        project: projectProp,
+        reason: { type: 'string' },
+      },
+      required: ['method', 'path', 'title', 'notifies', 'reason'],
       additionalProperties: false,
     },
   },
@@ -290,6 +336,16 @@ export async function executeTool(name, input = {}, { actor = 'agent' } = {}) {
       logActivity({ actor, kind: 'draft', project_id: draft.project_id, title: `Drafted email: ${input.subject}`, detail: `To ${(input.to || []).join(', ')}${attach.length ? ` with ${attach.map((a) => a.type.replace('_pdf', ' PDF')).join(', ')}` : ''}`, why: input.reason, entity_type: 'drafts', entity_id: draft.id });
       return { draft_id: draft.id, status: 'Saved as a draft. It has not been sent; the user reviews it and opens it in Outlook.' };
     }
+    case 'procore_find_endpoints':
+      return procore.findEndpoints(input.query);
+    case 'procore_endpoint_details':
+      return procore.endpointDetails(input.operation_id);
+    case 'procore_read':
+      return procore.readProcore(input);
+    case 'procore_request_change': {
+      const p = input.project ? resolveProject(input.project) : null;
+      return procore.requestChange({ ...input, projectId: p?.id, actor });
+    }
     case 'local_requirements':
       return findRequirements(input.topic).map((r) => ({ topic: r.topic, jurisdiction: r.jurisdiction, status: r.status, checked: r.checked || null, rule: r.rule, action: r.action, caveat: r.caveat || null, sources: r.sources.map((s) => s.url) }));
     default:
@@ -308,6 +364,10 @@ export const TOOL_LABELS = {
   create_record: 'Adding a record',
   update_record: 'Updating a record',
   draft_email: 'Writing a draft',
+  procore_find_endpoints: 'Looking up the Procore API',
+  procore_endpoint_details: 'Checking the Procore endpoint',
+  procore_read: 'Reading Procore',
+  procore_request_change: 'Asking for your approval',
   local_requirements: 'Checking local requirements',
 };
 

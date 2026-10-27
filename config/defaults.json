@@ -11,7 +11,8 @@
   },
   "procore": {
     "clientId": "",
-    "_note": "Optional. Procore developer app client ID (needs a client secret entered in the app)."
+    "env": "production",
+    "_note": "Client ID of the 'Nelson OS' app in the Procore Developer Portal (not secret). The client secret is entered once in the app and stored encrypted; never commit it. See docs/PROCORE-APP.md."
   },
   "ai": {
     "model": "claude-opus-5-5"

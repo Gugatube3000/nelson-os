@@ -16,7 +16,7 @@ export function Projects() {
     ${data.projects.length ? html`<div class="cards">${[...data.projects].sort((a, b) => b.risks.high - a.risks.high || b.risks.medium - a.risks.medium).map((p) => html`<a class="pcard" href=${`#/projects/${p.id}`}>
       <div class="spread" style="align-items:flex-start"><div><h2>${p.name}</h2><div class="small muted">${[p.address, p.city].filter(Boolean).join(', ') || 'No address yet'}</div></div>
         ${p.risks.high ? html`<span class="chip high">${p.risks.high} high</span>` : p.risks.medium ? html`<span class="chip medium">${p.risks.medium} to watch</span>` : html`<span class="chip ok">On track</span>`}</div>
-      <div class="row wrap" style="gap:6px">${p.phase && html`<span class="chip">${p.phase}</span>`}${p.review ? html`<span class="chip review">Found in email</span>` : null}${p.source === 'demo' ? html`<span class="chip">Sample</span>` : null}</div>
+      <div class="row wrap" style="gap:6px">${p.phase && html`<span class="chip">${p.phase}</span>`}${p.procore_id ? html`<span class="chip ok">Procore</span>` : null}${p.review ? html`<span class="chip review">Found in email</span>` : null}${p.source === 'demo' ? html`<span class="chip">Sample</span>` : null}</div>
       <div class="nums">
         <div><b>${p.counts.replyOwed}</b>need a reply</div>
         <div><b>${p.counts.openRfis}</b>open RFIs</div>
@@ -231,6 +231,7 @@ export function ProjectPage({ id, tab }) {
     <div class="page-head" style="margin-bottom:0"><div>
       <div class="small"><a href="#/projects" class="muted">Projects</a></div>
       <h1>${p.name}</h1><p class="muted">${[[p.address, p.city].filter(Boolean).join(', '), p.phase].filter(Boolean).join(' · ')}</p></div>
+      ${p.ext_url ? html`<a class="btn" href=${p.ext_url} target="_blank" rel="noopener">Open in Procore</a>` : null}
       ${p.review ? html`<div class="row"><span class="chip review">Found in email</span><button class="btn sm primary" onClick=${confirm}>Confirm project</button></div>` : null}
     </div>
     <nav class="tabs">${TABS.map(([k, l]) => html`<a href=${`#/projects/${p.id}/${k}`} class=${(tab || 'overview') === k ? 'on' : ''}>${l}${count[k] ? html`<span class="n">${count[k]}</span>` : null}</a>`)}</nav>

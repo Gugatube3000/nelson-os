@@ -1,4 +1,4 @@
-import { html, useState, useEffect, api, useApi, go, toast, toastErr, ago, Drawer, Loading } from './lib.js';
+import { html, useState, useEffect, api, useApi, useApp, go, toast, toastErr, ago, Drawer, Loading, Busy } from './lib.js';
 
 const fmtAddr = (list) => (list || []).map((a) => (a.name ? `${a.name} <${a.email}>` : a.email)).join(', ');
 const parseAddr = (s) => String(s || '').split(/[,;]/).map((x) => x.trim()).filter(Boolean).map((x) => {
@@ -53,12 +53,37 @@ function DraftDrawer({ id, onClose, onChange }) {
   </${Drawer}>`;
 }
 
+function ApprovalCard({ a, onDone }) {
+  const { refresh } = useApp();
+  const [busy, setBusy] = useState(null);
+  const decide = async (yes) => {
+    setBusy(yes ? 'yes' : 'no');
+    try {
+      const r = await api(`/approvals/${a.id}/${yes ? 'approve' : 'decline'}`, { method: 'POST' });
+      toast(yes ? (r.status === 'done' ? 'Done in Procore' : 'Procore did not accept the change; see the details') : 'Declined. Nothing changed in Procore.');
+      onDone(); refresh();
+    } catch (e) { toastErr(e); } finally { setBusy(null); }
+  };
+  let body = null;
+  try { body = a.body_json && Object.keys(a.body_json).length ? JSON.stringify(a.body_json, null, 2) : null; } catch { /* none */ }
+  return html`<article class="risk medium" style="margin-bottom:10px">
+    <div class="meta"><span class="chip medium">Needs your approval</span>${a.project && html`<span class="chip project">${a.project}</span>`}<span class="small muted">Procore · ${ago(a.created_at)}</span></div>
+    <h3>${a.title}</h3>
+    ${a.reason && html`<p class="small" style="margin-top:4px"><span class="muted">Why:</span> ${a.reason}</p>`}
+    <p class="small" style="margin-top:4px"><span class="muted">Procore may notify:</span> <b>${a.notifies || 'Not stated'}</b></p>
+    ${body && html`<details style="margin-top:8px"><summary class="small muted" style="cursor:pointer">Exact change (${a.method} ${a.path})</summary><pre class="small" style="white-space:pre-wrap;background:var(--vellum);padding:10px;border-radius:5px;max-height:240px;overflow:auto">${body}</pre></details>`}
+    <div class="row" style="margin-top:12px"><${Busy} class="btn primary" on=${busy === 'yes'} onClick=${() => decide(true)}>Approve and apply in Procore</${Busy}><${Busy} class="btn" on=${busy === 'no'} onClick=${() => decide(false)}>Decline</${Busy}></div>
+  </article>`;
+}
+
 export function Drafts({ openId }) {
   const { data, loading, reload } = useApi('/drafts');
+  const { data: approvals, reload: reloadApprovals } = useApi('/approvals');
   return html`<div class="page">
-    <div class="page-head"><div><h1>Drafts</h1><p class="muted">Replies, RFIs, transmittals and follow-ups ready for you to review and send from Outlook.</p></div></div>
+    <div class="page-head"><div><h1>Approvals</h1><p class="muted">Nothing leaves Nelson OS without you. Emails are sent by you from Outlook; Procore changes happen only when you approve them here.</p></div></div>
+    ${approvals?.length ? html`<h2 style="margin-bottom:10px">Procore changes <span class="muted small" style="font-weight:500">${approvals.length}</span></h2>${approvals.map((a) => html`<${ApprovalCard} key=${a.id} a=${a} onDone=${reloadApprovals} />`)}<h2 style="margin:24px 0 10px">Emails to review and send</h2>` : null}
     <div class="items">
-      ${loading && !data ? html`<${Loading} />` : !data?.length ? html`<div class="empty"><b>No drafts waiting</b>Drafts appear here when you prepare an RFI or submittal, or when Nelson OS writes a reply for you.</div>` :
+      ${loading && !data ? html`<${Loading} />` : !data?.length ? html`<div class="empty"><b>Nothing waiting for you</b>Email drafts and Procore changes appear here when you prepare an RFI or submittal, or when Nelson OS writes something for you.</div>` :
         data.map((d) => html`<button class="thread-row" onClick=${() => go(`#/drafts/${d.id}`)}>
           <div class="who">${(d.to_json || []).map((a) => a.name || a.email).join(', ') || 'No recipient'}</div>
           <div class="mid"><div class="row" style="gap:8px;flex-wrap:wrap"><span class="subj">${d.subject}</span>${d.project && html`<span class="chip project">${d.project}</span>`}${d.attachments_json?.length ? html`<span class="chip">PDF attached</span>` : null}${d.created_by === 'agent' ? html`<span class="chip ok">By Nelson OS</span>` : null}</div><div class="sum">${(d.body || '').slice(0, 160)}</div></div>
