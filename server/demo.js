@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { db, indexText, insert, logActivity, now, today } from './db.js';
 import { addDays } from './domain/risks.js';
+import { resolveDocPath } from './paths.js';
 import { addDocument } from './docs/pdf.js';
 import { rebuildThread } from './sync/mail.js';
 
@@ -213,7 +214,7 @@ export function clearDemo() {
     db.prepare(`DELETE FROM ${t} WHERE source = 'demo' OR project_id IN (${inList})`).run(...projectIds);
   }
   for (const doc of db.prepare(`SELECT id, path FROM documents WHERE source = 'demo' OR project_id IN (${inList})`).all(...projectIds)) {
-    fs.rmSync(doc.path, { force: true });
+    fs.rmSync(resolveDocPath(doc.path), { force: true });
     db.prepare('DELETE FROM doc_pages WHERE doc_id = ?').run(doc.id);
     db.prepare('DELETE FROM documents WHERE id = ?').run(doc.id);
     db.prepare("DELETE FROM search_fts WHERE kind = 'doc_page' AND ref_id LIKE ?").run(`${doc.id}:%`);

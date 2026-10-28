@@ -168,7 +168,7 @@ function DocumentsTab({ p, connected }) {
       <div class="items" style="margin-top:12px">${(docs || []).map((d) => html`<div style="border-top:1px solid var(--rule-soft)">
         <div class="item" style="cursor:default">
           <div class="grow"><a href=${`/api/documents/${d.id}/file`} target="_blank" style="font-weight:600">${d.filename}</a>
-            <div class="small muted">${d.status === 'indexing' ? html`<span class="spinner" style="width:12px;height:12px;vertical-align:-2px"></span> Reading pages…` : d.status === 'error' ? `Couldn't read: ${d.error}` : `${d.pages} pages${d.discipline ? ` · ${d.discipline}` : ''}`}</div></div>
+            <div class="small muted">${d.status === 'indexing' ? html`<span class="spinner" style="width:12px;height:12px;vertical-align:-2px"></span> Reading pages…` : d.status === 'error' ? `Couldn't read: ${d.error}` : `${d.pages} pages${d.discipline ? ` · ${d.discipline}` : ''}${d.error === 'scanned' ? ' · scanned, so mention a sheet or page number in questions' : ''}`}</div></div>
           ${d.status === 'ready' && html`<button class="btn sm ghost" onClick=${() => showPages(d)}>${pages[d.id] ? 'Hide sheets' : 'Sheets'}</button>`}
           ${d.status === 'error' && html`<button class="btn sm" onClick=${() => api(`/documents/${d.id}/reindex`, { method: 'POST' }).then(reload).catch(toastErr)}>Try again</button>`}
         </div>

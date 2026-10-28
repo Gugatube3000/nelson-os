@@ -8,9 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { PORT } from '../server/paths.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const PORT = process.env.NELSON_OS_PORT || 4780;
 const BASE = `http://localhost:${PORT}`;
 const HEADERS = { 'Content-Type': 'application/json', 'X-Requested-With': 'nelson-os' };
 

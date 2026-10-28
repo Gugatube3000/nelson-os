@@ -30,8 +30,9 @@ export function procoreConfig() {
     clientId: getSetting('procore.clientId') || CONFIG.procore?.clientId || '',
     clientSecret: getSecret('procore_client_secret') || '',
     env,
-    login: sandbox ? 'https://login-sandbox.procore.com' : 'https://login.procore.com',
-    api: sandbox ? 'https://sandbox.procore.com' : 'https://api.procore.com',
+    // Environment overrides exist only for tests against a simulated Procore.
+    login: process.env.NELSON_OS_PROCORE_LOGIN || (sandbox ? 'https://login-sandbox.procore.com' : 'https://login.procore.com'),
+    api: process.env.NELSON_OS_PROCORE_API || (sandbox ? 'https://sandbox.procore.com' : 'https://api.procore.com'),
     web: sandbox ? 'https://sandbox.procore.com' : 'https://app.procore.com',
     companyId: getSetting('procore.companyId'),
   };
@@ -141,7 +142,7 @@ export async function startAuth({ returnTo = '/#/connections' } = {}) {
     const gotState = url.searchParams.get('state');
     if (!code && !error) { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(page('Waiting for Procore…', 'Finish signing in in the Procore window.')); return; }
     // Procore echoes state; if it ever doesn't, the listener only exists during this ten-minute sign-in.
-    if (!pendingAuth || (gotState && gotState !== pendingAuth.state) || Date.now() - pendingAuth.at > 10 * 60 * 1000) {
+    if (!pendingAuth || gotState !== pendingAuth.state || Date.now() - pendingAuth.at > 10 * 60 * 1000) {
       res.writeHead(400, { 'Content-Type': 'text/html' }); res.end(page('Sign-in expired', 'Click Connect in Nelson OS again.')); return;
     }
     pendingAuth = null;
@@ -291,10 +292,47 @@ export function mapTask(t, web, pid) {
   };
 }
 
-function upsert(table, projectId, procoreId, fields) {
-  const existing = db.prepare(`SELECT id FROM ${table} WHERE procore_id = ?`).get(String(procoreId));
-  if (existing) return update(table, existing.id, fields);
-  return insert(table, { ...fields, project_id: projectId, procore_id: String(procoreId), source: 'procore', review: 0, created_by: 'procore' });
+const STATUS_WORDS = { sent: 'open', answered: 'answered', closed: 'closed', draft: 'draft', void: 'void', not_started: 'draft', gc_review: 'in review', submitted: 'with the reviewer', approved: 'approved', approved_as_noted: 'approved as noted', revise_resubmit: 'revise and resubmit', rejected: 'rejected' };
+const fmtDay = (d) => (d ? new Date(`${d}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) : '—');
+
+// What a person would want to hear about after a sync: new items, answers, status changes, slips.
+export function describeChange(table, before, after) {
+  const rfi = (r) => `RFI-${String(r.number ?? '?').padStart(3, '0')} ${r.subject}`;
+  const sub = (r) => `Submittal ${r.number || ''} ${r.title}`.replace(/\s+/g, ' ').trim();
+  if (table === 'rfis') {
+    if (!before) return after.status === 'draft' ? null : `New ${rfi(after)}`;
+    if (before.status !== after.status) return after.status === 'answered' ? `${rfi(after)} was answered` : `${rfi(after)} is now ${STATUS_WORDS[after.status] || after.status}`;
+    if (before.date_required !== after.date_required && after.date_required) return `${rfi(after)}: response due ${fmtDay(before.date_required)} → ${fmtDay(after.date_required)}`;
+  }
+  if (table === 'submittals') {
+    if (!before) return `New ${sub(after)}`;
+    if (before.status !== after.status) return `${sub(after)}: ${STATUS_WORDS[before.status] || before.status} → ${STATUS_WORDS[after.status] || after.status}`;
+  }
+  if (table === 'schedule_items' && before?.finish && after.finish && before.finish !== after.finish) {
+    const days = Math.round((new Date(after.finish) - new Date(before.finish)) / 86400000);
+    if (Math.abs(days) >= 2) return `Schedule: "${after.name}" finish ${days > 0 ? 'slipped' : 'moved up'} ${Math.abs(days)} days (${fmtDay(before.finish)} → ${fmtDay(after.finish)})`;
+  }
+  return null;
+}
+
+function upsert(table, projectId, procoreId, fields, { quiet = false } = {}) {
+  const existing = db.prepare(`SELECT * FROM ${table} WHERE procore_id = ?`).get(String(procoreId));
+  const rec = existing
+    ? update(table, existing.id, fields)
+    : insert(table, { ...fields, project_id: projectId, procore_id: String(procoreId), source: 'procore', review: 0, created_by: 'procore' });
+  const title = quiet ? null : describeChange(table, existing, rec);
+  if (title) logActivity({ actor: 'system', kind: 'change', project_id: projectId, title, why: 'Seen in Procore.', entity_type: table, entity_id: rec.id });
+  return rec;
+}
+
+// Items deleted (or made private) in Procore stop counting as open work here.
+function retireMissing(table, projectId, seen, label, closedStatus) {
+  const open = db.prepare(`SELECT * FROM ${table} WHERE project_id = ? AND source = 'procore' AND status NOT IN ('void', 'closed')`).all(projectId);
+  for (const r of open) {
+    if (seen.has(r.procore_id)) continue;
+    update(table, r.id, { status: closedStatus });
+    logActivity({ actor: 'system', kind: 'change', project_id: projectId, title: `${label(r)} is no longer in Procore`, detail: 'Deleted or made private in Procore; marked closed here.', entity_type: table, entity_id: r.id });
+  }
 }
 
 /** Pull active projects and their RFIs, submittals and schedule from Procore. */
@@ -305,6 +343,7 @@ export async function syncProcore() {
   if (!c.companyId) throw Object.assign(new Error('Choose your Procore company first.'), { status: 400 });
   Object.assign(syncState, { running: true, phase: 'Reading Procore projects', error: null, counts: { projects: 0, rfis: 0, submittals: 0, tasks: 0, skipped: [] } });
   try {
+    const quiet = !getSetting('procore.lastSync'); // the first import is summarized, not itemized
     const projects = await getAll('/rest/v1.0/projects', { company_id: c.companyId, 'filters[by_status]': 'Active' }, 500);
     for (const p of projects) {
       const linked = db.prepare('SELECT * FROM projects WHERE procore_id = ?').get(String(p.id)) || resolveProject(p.display_name || p.name) || (p.address && resolveProject(p.address));
@@ -313,24 +352,40 @@ export async function syncProcore() {
       if (linked) {
         // Keep names the team already uses; fill in what's missing.
         for (const [k, v] of Object.entries({ address: p.address, city: p.city, code: p.project_number, start_date: day(p.start_date), target_completion: day(p.completion_date) })) if (!linked[k] && v) fields[k] = v;
+        // A project first guessed from an email address takes Procore's name and becomes confirmed.
+        if (linked.review && linked.source !== 'procore') {
+          Object.assign(fields, { name: p.display_name || p.name, review: 0, aliases: [...new Set([...(linked.aliases || []), linked.name].filter(Boolean))] });
+        }
         local = update('projects', linked.id, fields);
       } else {
         local = insert('projects', { ...fields, name: p.display_name || p.name, address: p.address, city: p.city, code: p.project_number, start_date: day(p.start_date), target_completion: day(p.completion_date), status: 'active', source: 'procore', review: 0, created_by: 'procore' });
       }
       syncState.counts.projects++;
       syncState.phase = `Reading ${local.name}`;
+      let details = 0;
       const steps = [
-        ['rfis', () => getAll(`/rest/v1.0/projects/${p.id}/rfis`, {}, 1000), (r) => upsert('rfis', local.id, r.id, mapRfi(r, c.web, p.id))],
-        ['submittals', () => getAll(`/rest/v1.1/projects/${p.id}/submittals`, {}, 1000), (s) => upsert('submittals', local.id, s.id, mapSubmittal(s, c.web, p.id))],
-        ['tasks', () => getAll('/rest/v1.0/tasks', { project_id: p.id }, 3000), (t) => {
+        ['rfis', 1000, () => getAll(`/rest/v1.0/projects/${p.id}/rfis`, {}, 1000), async (r) => {
+          let m = mapRfi(r, c.web, p.id);
+          // List responses can leave out the question; open RFIs get the full record.
+          if (!m.question && ['sent', 'draft'].includes(m.status) && details < 40) {
+            details++;
+            try { m = mapRfi((await procoreGet(`/rest/v1.0/projects/${p.id}/rfis/${r.id}`)).data, c.web, p.id); } catch { /* keep the list version */ }
+          }
+          return upsert('rfis', local.id, r.id, m, { quiet });
+        }, (r) => `RFI-${String(r.number ?? '?').padStart(3, '0')} ${r.subject}`, 'void'],
+        ['submittals', 1000, () => getAll(`/rest/v1.1/projects/${p.id}/submittals`, {}, 1000), (s) => upsert('submittals', local.id, s.id, mapSubmittal(s, c.web, p.id), { quiet }),
+          (r) => `Submittal ${r.number || ''} ${r.title}`, 'closed'],
+        ['tasks', 3000, () => getAll('/rest/v1.0/tasks', { project_id: p.id }, 3000), (t) => {
           const m = mapTask(t, c.web, p.id);
           if (t.has_children || !m.start || (m.finish || m.start) < addDays(today(), -14) || m.start > addDays(today(), 90)) return null;
-          return upsert('schedule_items', local.id, t.id, m);
+          return upsert('schedule_items', local.id, t.id, m, { quiet });
         }],
       ];
-      for (const [kind, fetchAll, save] of steps) {
+      for (const [kind, cap, fetchAll, save, label, closedStatus] of steps) {
         try {
-          for (const row of await fetchAll()) if (save(row)) syncState.counts[kind]++;
+          const rows = await fetchAll();
+          for (const row of rows) if (await save(row)) syncState.counts[kind]++;
+          if (label && rows.length < cap) retireMissing(kind, local.id, new Set(rows.map((r) => String(r.id))), label, closedStatus);
         } catch (err) {
           // 403/404 usually means the tool isn't enabled on that project or the user lacks access.
           syncState.counts.skipped.push(`${local.name}: ${kind} (${err.status || 'error'})`);
@@ -407,6 +462,21 @@ export function requestChange({ method, path: p, path_params, body, title, notif
   return { approval_id: a.id, status: 'Waiting for Jonathan to approve in Nelson OS. Nothing has changed in Procore.' };
 }
 
+/** After a restart, a change that was being applied has an unknown outcome; show it, don't retry it. */
+export function markInterruptedApprovals() {
+  for (const a of db.prepare("SELECT id, project_id, title FROM approvals WHERE status = 'executing'").all()) {
+    update('approvals', a.id, { status: 'unknown', result: 'Nelson OS restarted while applying this change. Check Procore to see whether it went through before trying again.' });
+    logActivity({ actor: 'system', kind: 'approval', project_id: a.project_id, title: `Check in Procore: ${a.title}`, detail: 'Nelson OS restarted while applying this change.', entity_type: 'approvals', entity_id: a.id });
+  }
+}
+
+export function dismissApproval(id) {
+  const a = get('approvals', id);
+  if (!a) throw Object.assign(new Error('Approval not found'), { status: 404 });
+  if (!['unknown', 'failed'].includes(a.status)) throw Object.assign(new Error('Only finished or uncertain changes can be cleared.'), { status: 409 });
+  return update('approvals', id, { status: 'dismissed' });
+}
+
 export async function decideApproval(id, approve, { by = 'user' } = {}) {
   const a = get('approvals', id);
   if (!a) throw Object.assign(new Error('Approval not found'), { status: 404 });
@@ -417,6 +487,11 @@ export async function decideApproval(id, approve, { by = 'user' } = {}) {
     logActivity({ actor: 'user', kind: 'rejected', project_id: a.project_id, title: `Declined: ${a.title}`, entity_type: 'approvals', entity_id: id });
     return get('approvals', id);
   }
+  // Claim before the network call. A double click or another browser must not
+  // issue the same external change twice. A crash leaves an explicit unknown
+  // outcome rather than automatically retrying a possibly completed write.
+  const claimed = db.prepare("UPDATE approvals SET status = 'executing', decided_at = ? WHERE id = ? AND status = 'pending'").run(now(), id);
+  if (!claimed.changes) throw Object.assign(new Error('This change is already being processed.'), { status: 409 });
   let result;
   try {
     result = await callMcp('procore_api_call', { method: a.method, path: a.path, path_params: a.path_params_json, body: a.body_json, company_id: procoreConfig().companyId || undefined });

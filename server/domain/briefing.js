@@ -102,6 +102,11 @@ export function briefing({ projectId } = {}) {
     suggestedReplies,
     projects: projectRows,
     activity: recentActivity({ projectId, limit: 12 }),
+    // Answers, returns, slips and new items from the last three days: what changed while you were out.
+    changes: db.prepare(`SELECT id, at, kind, title, detail, project_id, entity_type, entity_id FROM activity_log
+      WHERE kind IN ('change', 'detected') AND at >= ?${projectId ? ' AND project_id = ?' : ''} ORDER BY id DESC LIMIT 30`)
+      .all(new Date(Date.now() - 3 * 86400000).toISOString(), ...(projectId ? [projectId] : []))
+      .map((c) => ({ ...c, project: names[c.project_id] || null })),
   };
 }
 

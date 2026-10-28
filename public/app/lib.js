@@ -18,18 +18,29 @@ export async function api(path, { method = 'GET', body, raw } = {}) {
 /** Fetch data for a component; re-runs when deps change. */
 export function useApi(path, deps = []) {
   const [state, setState] = useState({ data: null, error: null, loading: true });
+  const sequence = useRef(0);
   const load = useCallback(() => {
     if (!path) return;
+    const request = ++sequence.current;
     setState((s) => ({ ...s, loading: true }));
-    api(path).then((data) => setState({ data, error: null, loading: false })).catch((error) => setState({ data: null, error, loading: false }));
+    api(path).then((data) => { if (request === sequence.current) setState({ data, error: null, loading: false }); }).catch((error) => {
+      if (request === sequence.current) { setState({ data: null, error, loading: false }); toastErr(error); }
+    });
   }, [path]);
   useEffect(load, [path, ...deps]);
+  useEffect(() => () => { ++sequence.current; }, [path]);
   return { ...state, reload: load };
 }
 
 /** Stream a chat turn: onStep for progress, resolves with the final result. */
-export async function streamChat(body, onStep) {
+export async function streamChat(body, onStep, onStarted) {
   const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'nelson-os' }, body: JSON.stringify(body) });
+  if (!res.ok) {
+    if (res.status === 401) { location.hash = '#/login'; throw new Error('Enter your passcode.'); }
+    const problem = await res.json().catch(() => ({}));
+    throw new Error(problem.error || `The request failed (${res.status}). Try again.`);
+  }
+  if (!res.body) throw new Error('The connection ended before an answer arrived. Your saved conversations are in Recent.');
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = '';
@@ -46,11 +57,13 @@ export async function streamChat(body, onStep) {
       const data = chunk.match(/^data: (.+)$/m)?.[1];
       if (!ev || !data) continue;
       const parsed = JSON.parse(data);
+      if (ev === 'started') onStarted?.(parsed);
       if (ev === 'step') onStep?.(parsed);
       if (ev === 'done') result = parsed;
       if (ev === 'error') throw new Error(parsed.message);
     }
   }
+  if (!result?.chatId || !result.entry) throw new Error('The connection was interrupted. Reopen this conversation from Recent to check the saved answer before trying again.');
   return result;
 }
 

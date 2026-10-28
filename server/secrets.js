@@ -13,8 +13,37 @@ const PLAIN_KEY_FILE = path.join(DATA_DIR, 'vault.key.plain');
 const KEYCHAIN_SERVICE = 'NelsonOS';
 
 let cachedKey = null;
-let cachedVault = null;
 export let protection = 'unknown';
+
+// The server, CLI tools and another app instance may share this data folder.
+// Serialize read-modify-write operations and always reread the encrypted file.
+function withVaultLock(fn) {
+  const lock = path.join(DATA_DIR, 'vault.lock');
+  const owner = `${process.pid}:${crypto.randomBytes(8).toString('hex')}`;
+  const deadline = Date.now() + 20000;
+  for (;;) {
+    try {
+      const fd = fs.openSync(lock, 'wx', 0o600);
+      fs.writeFileSync(fd, owner);
+      fs.closeSync(fd);
+      break;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      try {
+        const pid = Number(fs.readFileSync(lock, 'utf8').split(':')[0]);
+        if (pid > 0) {
+          try { process.kill(pid, 0); } catch (e) { if (e.code === 'ESRCH') { fs.unlinkSync(lock); continue; } }
+        }
+      } catch (e) { if (e.code === 'ENOENT') continue; }
+      if (Date.now() >= deadline) throw new Error('Sign-in storage is busy. Try again in a moment.');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
+  try { return fn(); }
+  finally {
+    if (fs.existsSync(lock) && fs.readFileSync(lock, 'utf8') === owner) fs.unlinkSync(lock);
+  }
+}
 
 function dpapi(mode, b64) {
   const op = mode === 'protect' ? 'Protect' : 'Unprotect';
@@ -39,8 +68,14 @@ function loadKey() {
       if (fs.existsSync(KEY_FILE)) {
         cachedKey = Buffer.from(dpapi('unprotect', fs.readFileSync(KEY_FILE, 'utf8')), 'base64');
       } else {
-        cachedKey = crypto.randomBytes(32);
-        fs.writeFileSync(KEY_FILE, dpapi('protect', cachedKey.toString('base64')));
+        if (fs.existsSync(VAULT_FILE)) throw new Error('The encryption key for the saved sign-ins is missing. Restore the key from a backup.');
+        const key = crypto.randomBytes(32);
+        const protectedKey = dpapi('protect', key.toString('base64'));
+        try { fs.writeFileSync(KEY_FILE, protectedKey, { flag: 'wx' }); cachedKey = key; }
+        catch (err) {
+          if (err.code !== 'EEXIST') throw err;
+          cachedKey = Buffer.from(dpapi('unprotect', fs.readFileSync(KEY_FILE, 'utf8')), 'base64');
+        }
       }
       protection = 'Windows DPAPI';
       return cachedKey;
@@ -57,25 +92,32 @@ function loadKey() {
       return cachedKey;
     }
   } catch (err) {
+    if (fs.existsSync(KEY_FILE) || fs.existsSync(VAULT_FILE)) {
+      cachedKey = null;
+      throw new Error('Cannot unlock saved sign-ins. Use the same operating-system account or restore the encryption key from a backup. The existing key has been preserved.', { cause: err });
+    }
     console.warn('[vault] OS key protection unavailable, using local key file:', err.message);
   }
-  cachedKey = crypto.randomBytes(32);
-  fs.writeFileSync(PLAIN_KEY_FILE, cachedKey.toString('base64'), { mode: 0o600 });
+  if (fs.existsSync(VAULT_FILE)) throw new Error('The encryption key for saved sign-ins is missing. Restore it from a backup.');
+  const key = crypto.randomBytes(32);
+  try { fs.writeFileSync(PLAIN_KEY_FILE, key.toString('base64'), { mode: 0o600, flag: 'wx' }); cachedKey = key; }
+  catch (err) {
+    if (err.code !== 'EEXIST') throw err;
+    cachedKey = Buffer.from(fs.readFileSync(PLAIN_KEY_FILE, 'utf8'), 'base64');
+  }
   protection = 'Local key file (owner-only permissions)';
   return cachedKey;
 }
 
 function readVault() {
-  if (cachedVault) return cachedVault;
-  if (!fs.existsSync(VAULT_FILE)) return (cachedVault = {});
+  if (!fs.existsSync(VAULT_FILE)) return {};
   const raw = Buffer.from(fs.readFileSync(VAULT_FILE, 'utf8'), 'base64');
   const iv = raw.subarray(0, 12);
   const tag = raw.subarray(12, 28);
   const decipher = crypto.createDecipheriv('aes-256-gcm', loadKey(), iv);
   decipher.setAuthTag(tag);
   const plain = Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]);
-  cachedVault = JSON.parse(plain.toString('utf8'));
-  return cachedVault;
+  return JSON.parse(plain.toString('utf8'));
 }
 
 function writeVault(vault) {
@@ -85,7 +127,6 @@ function writeVault(vault) {
   const tmp = VAULT_FILE + '.tmp';
   fs.writeFileSync(tmp, Buffer.concat([iv, cipher.getAuthTag(), body]).toString('base64'), { mode: 0o600 });
   fs.renameSync(tmp, VAULT_FILE);
-  cachedVault = vault;
 }
 
 export function getSecret(name) {
@@ -93,10 +134,12 @@ export function getSecret(name) {
 }
 
 export function setSecret(name, value) {
+  return withVaultLock(() => {
   const vault = { ...readVault() };
   if (value === null || value === undefined) delete vault[name];
   else vault[name] = value;
   writeVault(vault);
+  });
 }
 
 export function hasSecret(name) {

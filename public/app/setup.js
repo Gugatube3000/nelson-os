@@ -1,4 +1,4 @@
-import { html, useState, useEffect, api, useApi, useApp, useRoute, toast, toastErr, Busy } from './lib.js';
+import { html, useState, useEffect, useRef, api, useApi, useApp, useRoute, toast, toastErr, Busy } from './lib.js';
 import { AppTile } from './connections.js';
 
 const STEPS = ['About you', 'Your AI', 'Procore', 'Outlook', 'First look', 'Start with your computer'];
@@ -116,10 +116,14 @@ function StepComputer({ finish }) {
 }
 
 export function Setup() {
-  const { refresh } = useApp();
+  const { state, refresh } = useApp();
   const route = useRoute();
-  const [step, setStep] = useState(() => Number(route.query.step) || store.get());
-  useEffect(() => { store.set(step); }, [step]);
+  const [step, setStep] = useState(() => Math.max(0, Math.min(STEPS.length - 1, Number(route.query.step ?? state.setupStep ?? store.get()) || 0)));
+  const savingProgress = useRef(Promise.resolve());
+  useEffect(() => {
+    store.set(step);
+    if (!state.setupComplete) savingProgress.current = savingProgress.current.catch(() => {}).then(() => api('/setup/progress', { method: 'POST', body: { step } })).catch(toastErr);
+  }, [step]);
   const next = () => setStep((s) => Math.min(s + 1, STEPS.length - 1));
   const finish = async () => { toast('You’re set up'); location.hash = '#/'; await refresh(); };
   const views = [html`<${StepYou} next=${next} />`, html`<${StepAI} next=${next} />`, html`<${StepProcore} next=${next} />`, html`<${StepOutlook} next=${next} />`, html`<${StepImport} next=${next} />`, html`<${StepComputer} finish=${finish} />`];

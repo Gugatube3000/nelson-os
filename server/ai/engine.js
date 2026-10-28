@@ -10,12 +10,22 @@ import { getSecret } from '../secrets.js';
 import { CLAUDE_LOCKDOWN_ENV, cliStatus, codexLockdownArgs, runCli } from './cli.js';
 
 let statusCache = { at: 0, value: null };
+let checking = null;
 
-/** Sign-in state of the local Claude Code and Codex CLIs (cached for a minute). */
+function checkClis() {
+  checking ||= Promise.all([cliStatus('claude'), cliStatus('codex')])
+    .then(([claude, codex]) => { statusCache = { at: Date.now(), value: { claude, codex } }; return statusCache.value; })
+    .finally(() => { checking = null; });
+  return checking;
+}
+
+/**
+ * Sign-in state of the local Claude Code and Codex CLIs. A stale answer is returned at once
+ * and refreshed in the background, so a slow CLI never makes the app feel stuck.
+ */
 export async function cliStates({ refresh = false } = {}) {
-  if (!refresh && statusCache.value && Date.now() - statusCache.at < 60000) return statusCache.value;
-  const [claude, codex] = await Promise.all([cliStatus('claude'), cliStatus('codex')]);
-  statusCache = { at: Date.now(), value: { claude, codex } };
+  if (refresh || !statusCache.value) return checkClis();
+  if (Date.now() - statusCache.at > 60000) checkClis().catch(() => {});
   return statusCache.value;
 }
 
@@ -33,9 +43,12 @@ export const ENGINE_LABELS = {
 export async function engineStatus({ refresh = false } = {}) {
   const preference = getSetting('ai.engine', 'auto');
   const hasKey = !!getSecret('anthropic_api_key');
-  const clis = await cliStates({ refresh });
+  // With AI switched off there is no reason to run the Claude/Codex sign-in checks.
+  const clis = preference === 'none' && !refresh
+    ? statusCache.value || { claude: { installed: false, loggedIn: false }, codex: { installed: false, loggedIn: false } }
+    : await cliStates({ refresh });
   const available = { anthropic: hasKey, 'claude-cli': clis.claude.loggedIn, 'codex-cli': clis.codex.loggedIn };
-  let engine = available[preference] ? preference : null;
+  let engine = preference === 'none' ? 'none' : available[preference] ? preference : null;
   if (!engine) engine = available['claude-cli'] ? 'claude-cli' : available['codex-cli'] ? 'codex-cli' : hasKey ? 'anthropic' : 'none';
   return { engine, label: ENGINE_LABELS[engine], preference, model: currentModel(), hasKey, clis, available };
 }

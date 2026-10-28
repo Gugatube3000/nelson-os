@@ -43,12 +43,16 @@ test('Outlook: a send attempt is refused before any network call', async () => {
 });
 
 test('Outlook: "needs admin approval" turns into a one-click approval link', async () => {
-  const { finishAuth } = await import('../server/sync/microsoft.js');
+  const { finishAuth, authUrl, adminConsentUrl } = await import('../server/sync/microsoft.js');
+  const { setSetting } = await import('../server/db.js');
+  setSetting('microsoft.clientId', '00000000-0000-0000-0000-000000000001');
+  const state = new URL(authUrl()).searchParams.get('state');
   await assert.rejects(
-    finishAuth({ error: 'access_denied', error_description: 'AADSTS90094: An administrator of Nelson Group Street has set a policy that prevents you from granting Nelson OS the permissions it is requesting.' }),
-    (err) => /needs an admin to approve/.test(err.message) && /\/v2\.0\/adminconsent\?/.test(err.message) && /graph\.microsoft\.com%2F\.default/.test(err.message),
+    finishAuth({ state, error: 'access_denied', error_description: 'AADSTS90094: An administrator of Nelson Group Street has set a policy that prevents you from granting Nelson OS the permissions it is requesting.' }),
+    (err) => /needs an admin to approve/.test(err.message) && /\/v2\.0\/adminconsent\?/.test(err.message) && /Mail.Read/.test(err.message) && !/\.default/.test(err.message),
   );
-  assert.deepEqual(await finishAuth({ admin_consent: 'True', state: 'admin-consent' }), { returnTo: '/#/connections', adminConsented: true });
+  const consent = new URL(adminConsentUrl()).searchParams.get('state');
+  assert.deepEqual(await finishAuth({ admin_consent: 'True', state: consent }), { returnTo: '/#/connections', adminConsented: true });
 });
 
 test('the agent has no tool that sends, replies, forwards or approves', () => {

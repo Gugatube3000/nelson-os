@@ -4,14 +4,16 @@ import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
 import QRCode from 'qrcode';
-import { APP_ROOT, CONFIG, DATA_DIR, PORT } from './paths.js';
+import { APP_ROOT, CONFIG, DATA_DIR, PORT, resolveDocPath } from './paths.js';
 import { db, ENTITIES, get, getSetting, insert, list, logActivity, now, recentActivity, remove, search, setSetting, today, update } from './db.js';
 import { getSecret, setSecret, vaultInfo } from './secrets.js';
 import { engineStatus } from './ai/engine.js';
 import { jobs as cliJobs } from './ai/cli.js';
 import { chat, getChat, listChats } from './ai/agent.js';
 import { executeTool, TOOLS, projectDetail, stripQuoted } from './ai/tools.js';
-import { profile } from './ai/prompts.js';
+import { profile, saveProfile } from './ai/prompts.js';
+import { recoverInterruptedChats, indexSavedConversations } from './ai/chat-store.js';
+import { createBackup, backupStatus, exportData } from './backup.js';
 import { briefing } from './domain/briefing.js';
 import { addDays, computeRisks, dismissRisk, releaseBy, returnDue, submitBy } from './domain/risks.js';
 import { REQUIREMENTS, CHECKED } from './domain/requirements.js';
@@ -82,6 +84,7 @@ app.get('/api/state', wrap(async (req, res) => {
   res.json({
     version: VERSION,
     setupComplete: !!getSetting('setup.complete'),
+    setupStep: getSetting('setup.step'),
     profile: profile(),
     company: CONFIG.company,
     engine: await engineStatus(),
@@ -95,15 +98,19 @@ app.get('/api/state', wrap(async (req, res) => {
 }));
 
 app.post('/api/profile', (req, res) => {
-  const { name, title, email, phone, signature, company } = req.body || {};
-  const p = { ...(getSetting('profile', {}) || {}), name, title, email, phone, company: company || CONFIG.company };
-  p.signature = signature || [p.name, p.title, p.company, p.phone].filter(Boolean).join('\n');
-  setSetting('profile', p);
-  res.json(profile());
+  res.json(saveProfile(req.body));
+});
+
+app.post('/api/setup/progress', (req, res) => {
+  const step = req.body?.step;
+  if (!Number.isInteger(step) || step < 0 || step > 5) return res.status(400).json({ error: 'Invalid setup step.' });
+  if (!getSetting('setup.complete')) setSetting('setup.step', step);
+  res.json({ ok: true });
 });
 
 app.post('/api/setup/complete', (req, res) => {
   setSetting('setup.complete', true);
+  setSetting('setup.step', null);
   logActivity({ actor: 'user', kind: 'setup', title: 'Finished setting up Nelson OS' });
   res.json({ ok: true });
 });
@@ -134,7 +141,9 @@ app.post('/api/procore/sync', (req, res) => { procore.syncProcore().catch(() => 
 app.get('/api/procore/status', (req, res) => res.json(procore.status()));
 
 // ---------- approvals (Procore changes wait here for Jonathan) ----------
-app.get('/api/approvals', (req, res) => res.json(list('approvals', { status: req.query.status || 'pending' }).map((a) => ({ ...a, project: nameOf(a.project_id) }))));
+// Pending changes, plus any whose outcome needs a look (failed, or interrupted by a restart).
+app.get('/api/approvals', (req, res) => res.json(list('approvals', { status: req.query.status ? [req.query.status] : ['pending', 'unknown', 'failed'] }, { order: 'created_at' }).map((a) => ({ ...a, project: nameOf(a.project_id) }))));
+app.post('/api/approvals/:id/dismiss', (req, res) => res.json(procore.dismissApproval(req.params.id)));
 app.post('/api/approvals/:id/approve', wrap(async (req, res) => res.json(await procore.decideApproval(req.params.id, true, { by: 'user' }))));
 app.post('/api/approvals/:id/decline', wrap(async (req, res) => res.json(await procore.decideApproval(req.params.id, false, { by: 'user' }))));
 
@@ -240,7 +249,7 @@ app.get('/api/documents/:id/file', (req, res) => {
   const d = get('documents', req.params.id);
   if (!d) return res.status(404).end();
   res.type('application/pdf').setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(d.filename)}"`);
-  res.sendFile(d.path);
+  res.sendFile(resolveDocPath(d.path));
 });
 app.get('/api/documents/:id/page/:n', wrap(async (req, res) => {
   const d = get('documents', req.params.id);
@@ -379,7 +388,11 @@ app.post('/api/drafts/:id/sent', (req, res) => {
 
 // ---------- chat (streamed progress) ----------
 app.get('/api/chats', (req, res) => res.json(listChats()));
-app.get('/api/chats/:id', (req, res) => res.json(getChat(req.params.id) || { display: [] }));
+app.get('/api/chats/:id', (req, res) => {
+  const c = getChat(req.params.id);
+  if (!c) return res.status(404).json({ error: 'Conversation not found.' });
+  res.json(c);
+});
 app.post('/api/chat', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -387,7 +400,7 @@ app.post('/api/chat', async (req, res) => {
   const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   const ping = setInterval(() => res.write(': ping\n\n'), 15000);
   try {
-    const out = await chat({ chatId: req.body.chatId, projectId: req.body.projectId, message: String(req.body.message || '').slice(0, 8000), onStep: (s) => send('step', s) });
+    const out = await chat({ chatId: req.body?.chatId, projectId: req.body?.projectId, message: String(req.body?.message || '').slice(0, 8000), onStep: (s) => send('step', s), onStarted: (s) => send('started', s) });
     send('done', out);
   } catch (err) {
     send('error', { message: err.message });
@@ -459,8 +472,7 @@ app.post('/api/projects/:id/schedule/import', (req, res) => {
 app.post('/api/demo/load', wrap(async (req, res) => res.json(await loadDemo())));
 app.post('/api/demo/clear', (req, res) => res.json(clearDemo()));
 app.get('/api/export', (req, res) => {
-  const dump = { exported_at: now(), version: VERSION };
-  for (const t of [...Object.keys(ENTITIES), 'emails', 'activity_log', 'calendar_events']) dump[t] = db.prepare(`SELECT * FROM ${t}`).all();
+  const dump = exportData(VERSION);
   res.setHeader('Content-Disposition', `attachment; filename="nelson-os-backup-${today()}.json"`);
   res.json(dump);
 });
@@ -474,13 +486,17 @@ app.get('/api/settings', wrap(async (req, res) => {
     microsoft: { ...ms.status(), clientIdSource: getSetting('microsoft.clientId') ? 'settings' : CONFIG.microsoft?.clientId ? 'config' : 'missing', redirectUri: ms.REDIRECT_URI },
     system: { dataDir: DATA_DIR, appDir: APP_ROOT, vault: vaultInfo(), shortcuts: shortcutStatus(), openOnSignIn: !fs.existsSync(path.join(DATA_DIR, 'no-open-on-startup')), mcp: mcpStatus(), platform: process.platform },
     phone: { enabled: !!getSetting('phone.enabled'), hasPasscode: !!getSetting('phone.passcode') },
+    backups: backupStatus(),
   });
 }));
 app.post('/api/settings', (req, res) => {
   const b = req.body || {};
+  if (b.effort && !['low', 'medium', 'high'].includes(b.effort)) return res.status(400).json({ error: 'Choose low, medium or high AI effort.' });
+  if (b.model !== undefined && (typeof b.model !== 'string' || !b.model.trim() || b.model.length > 200)) return res.status(400).json({ error: 'Enter a valid model name.' });
+  if (b.intervalMinutes !== undefined && (!Number.isFinite(Number(b.intervalMinutes)) || Number(b.intervalMinutes) < 5 || Number(b.intervalMinutes) > 1440)) return res.status(400).json({ error: 'Choose a sync interval between 5 and 1440 minutes.' });
   if (b.effort) setSetting('ai.effort', b.effort);
   if (b.model) setSetting('ai.model', b.model);
-  if (b.intervalMinutes) { setSetting('sync.intervalMinutes', Math.max(5, Number(b.intervalMinutes))); scheduleSync(); }
+  if (b.intervalMinutes !== undefined) { setSetting('sync.intervalMinutes', Number(b.intervalMinutes)); scheduleSync(); }
   res.json({ ok: true });
 });
 app.post('/api/system/shortcuts', (req, res) => {
@@ -499,6 +515,10 @@ app.post('/api/system/quit', (req, res) => {
   res.json({ ok: true });
   setTimeout(() => process.exit(0), 200);
 });
+app.post('/api/system/backup', wrap(async (req, res) => {
+  if (!isLocal(req)) return res.status(403).json({ error: 'Create local backups from this computer.' });
+  res.json(await createBackup({ force: true }));
+}));
 
 function lanUrls() {
   return Object.values(os.networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => `http://${i.address}:${PORT}`);
@@ -576,16 +596,29 @@ function scheduleSync() {
   }, minutes * 60000);
 }
 
+// A background failure (a sync, a document, an AI call) is logged; it never takes the app down.
+// A programming error is logged and the supervisor restarts the server.
+process.on('unhandledRejection', (err) => console.error('[unhandled]', err?.stack || err));
+process.on('uncaughtException', (err) => { console.error('[crash]', err?.stack || err); process.exit(1); });
+
 try {
   await listen();
 } catch (err) {
   if (err.code === 'EADDRINUSE') {
-    console.log(`Nelson OS is already running at http://localhost:${PORT}`);
-    process.exit(0);
+    let ours = false;
+    try { ours = (await (await fetch(`http://localhost:${PORT}/api/health`, { signal: AbortSignal.timeout(3000) })).json()).app === 'nelson-os'; } catch { /* not ours */ }
+    if (ours) { console.log(`Nelson OS is already running at http://localhost:${PORT}`); process.exit(0); }
+    console.error(`Port ${PORT} is used by another program. Close it, or set "port" in config/local.json.`);
+    process.exit(3);
   }
   throw err;
 }
 console.log(`Nelson OS ${VERSION} running at http://localhost:${PORT}  (data: ${DATA_DIR})`);
+recoverInterruptedChats();
+procore.markInterruptedApprovals();
+indexSavedConversations();
+createBackup().catch((err) => console.warn('[backup]', err.message));
+setInterval(() => createBackup().catch((err) => console.warn('[backup]', err.message)), 6 * 3600000).unref();
 scheduleSync();
 scheduleProcore();
 setTimeout(() => { if (ms.status().connected && !syncState.running) syncMail().catch(() => {}); }, 20000);

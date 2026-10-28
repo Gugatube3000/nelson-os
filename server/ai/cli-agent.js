@@ -13,7 +13,7 @@ fs.mkdirSync(WORKDIR, { recursive: true });
 export const MCP_SERVER = {
   command: process.execPath,
   args: ['--disable-warning=ExperimentalWarning', path.join(APP_ROOT, 'mcp', 'server.js')],
-  env: { NELSON_OS_PORT: String(PORT) },
+  env: { NELSON_OS_PORT: String(PORT), NELSON_OS_DATA: DATA_DIR },
 };
 
 function mcpConfigFile() {
@@ -22,7 +22,7 @@ function mcpConfigFile() {
   return file;
 }
 
-export async function runClaudeAgent({ prompt, sessionId, onStep }) {
+export async function runClaudeAgent({ prompt, sessionId, fallbackPrompt = prompt, onStep }) {
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--max-turns', '40',
     '--mcp-config', mcpConfigFile(), '--strict-mcp-config',
     '--tools', 'Read', '--allowedTools', 'mcp__nelson-os', 'Read'];
@@ -47,7 +47,7 @@ export async function runClaudeAgent({ prompt, sessionId, onStep }) {
     },
   });
   if (!result) {
-    if (sessionId) return runClaudeAgent({ prompt, sessionId: null, onStep }); // session expired: start fresh
+    if (sessionId) return runClaudeAgent({ prompt: fallbackPrompt, sessionId: null, onStep });
     throw new Error(`Claude did not return an answer. ${(r.stderr || '').slice(0, 300)}`);
   }
   if (result.is_error) throw new Error(result.result || 'Claude reported an error.');
@@ -56,11 +56,11 @@ export async function runClaudeAgent({ prompt, sessionId, onStep }) {
 
 export async function runCodexAgent({ prompt, onStep }) {
   const outFile = path.join(os.tmpdir(), `nelson-os-codex-${process.pid}-${Date.now()}.txt`);
-  const lit = (s) => `'${s}'`; // TOML literal string: backslashes in Windows paths stay as-is
+  const lit = (s) => JSON.stringify(String(s));
   const args = ['exec', '--json', '--skip-git-repo-check', '--ephemeral', '-s', 'read-only', ...(await codexLockdownArgs({ keep: ['nelson-os'] })),
     '-c', `mcp_servers.nelson-os.command=${lit(MCP_SERVER.command)}`,
     '-c', `mcp_servers.nelson-os.args=[${MCP_SERVER.args.map(lit).join(', ')}]`,
-    '-c', `mcp_servers.nelson-os.env={ NELSON_OS_PORT = ${lit(String(PORT))} }`,
+    '-c', `mcp_servers.nelson-os.env={ NELSON_OS_PORT = ${lit(String(PORT))}, NELSON_OS_DATA = ${lit(DATA_DIR)} }`,
     '-o', outFile, '-'];
   try {
     const r = await runCli('codex', args, {

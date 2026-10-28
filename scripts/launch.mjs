@@ -21,13 +21,11 @@ async function healthy() {
 }
 
 async function startServer() {
-  const log = path.join(LOG_DIR, 'server.log');
-  try { if (fs.statSync(log).size > 5 * 1024 * 1024) fs.renameSync(log, `${log}.old`); } catch { /* no log yet */ }
-  const out = fs.openSync(log, 'a');
-  spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP_ROOT, 'server', 'index.js')], {
-    cwd: APP_ROOT, detached: true, stdio: ['ignore', out, out], windowsHide: true, env: cleanEnv(),
+  // The supervisor runs the server and restarts it if it ever crashes or hangs.
+  spawn(process.execPath, [path.join(APP_ROOT, 'scripts', 'supervisor.mjs')], {
+    cwd: APP_ROOT, detached: true, stdio: 'ignore', windowsHide: true, env: cleanEnv(),
   }).unref();
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 90; i++) {
     if (await healthy()) return true;
     await new Promise((r) => setTimeout(r, 500));
   }

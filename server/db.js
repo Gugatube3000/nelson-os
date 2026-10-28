@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { DATA_DIR } from './paths.js';
 
 export const db = new DatabaseSync(process.env.NELSON_OS_DB || path.join(DATA_DIR, 'nelson-os.db'));
-db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
+db.exec('PRAGMA busy_timeout = 10000; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
 
 // Columns shared by every construction log: where the record came from and
 // whether a person has confirmed it (review = 1 means "detected, not yet confirmed").
@@ -131,8 +131,24 @@ for (const t of ['projects', 'rfis', 'submittals', 'schedule_items', 'changes'])
 }
 
 export const now = () => new Date().toISOString();
-export const today = () => new Date().toISOString().slice(0, 10);
+export const today = () => new Date().toLocaleDateString('en-CA');
 export const newId = (prefix) => `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
+
+// Save the record and its search index together, including when a caller already
+// owns a transaction. A failed index update must never leave a half-saved record.
+let savepoint = 0;
+export function transaction(fn) {
+  const name = `nos_${++savepoint}`;
+  db.exec(`SAVEPOINT ${name}`);
+  try {
+    const result = fn();
+    db.exec(`RELEASE ${name}`);
+    return result;
+  } catch (err) {
+    db.exec(`ROLLBACK TO ${name}; RELEASE ${name}`);
+    throw err;
+  }
+}
 
 // ---------- settings ----------
 export function getSetting(key, fallback = null) {
@@ -223,6 +239,10 @@ export function get(entity, id) {
 }
 
 export function insert(entity, data) {
+  return transaction(() => insertRecord(entity, data));
+}
+
+function insertRecord(entity, data) {
   const def = assertEntity(entity);
   const row = encode(entity, data);
   const id = data.id || newId(def.prefix);
@@ -243,6 +263,10 @@ export function insert(entity, data) {
 }
 
 export function update(entity, id, data) {
+  return transaction(() => updateRecord(entity, id, data));
+}
+
+function updateRecord(entity, id, data) {
   assertEntity(entity);
   const row = encode(entity, data);
   if (columns(entity).has('updated_at')) row.updated_at = now();
@@ -258,8 +282,10 @@ export function update(entity, id, data) {
 
 export function remove(entity, id) {
   assertEntity(entity);
-  db.prepare(`DELETE FROM ${entity} WHERE id = ?`).run(id);
-  db.prepare('DELETE FROM search_fts WHERE kind = ? AND ref_id = ?').run(entity, id);
+  transaction(() => {
+    db.prepare(`DELETE FROM ${entity} WHERE id = ?`).run(id);
+    db.prepare('DELETE FROM search_fts WHERE kind = ? AND ref_id = ?').run(entity, id);
+  });
 }
 
 // ---------- full-text search ----------

@@ -117,11 +117,14 @@ export function Settings() {
     <div class="panel" style="padding:16px" >
       <p class="small muted">Everything is stored on this computer in <code>${sys.dataDir}</code>. Passwords and sign-ins are encrypted (${sys.vault.protection}).</p>
       <div class="row wrap" style="margin-top:12px">
-        <a class="btn" href="/api/export" download>Download a backup</a>
+        <a class="btn" href="/api/export" download>Download data export</a>
+        <button class="btn" onClick=${() => api('/system/backup', { method: 'POST' }).then(() => { toast('Backup saved and verified'); reload(); }).catch(toastErr)}>Back up now</button>
         ${state.demo ? html`<button class="btn" onClick=${() => api('/demo/clear', { method: 'POST' }).then(() => { toast('Sample projects removed'); refresh(); }).catch(toastErr)}>Remove sample projects</button>`
           : html`<button class="btn" onClick=${() => api('/demo/load', { method: 'POST' }).then(() => { toast('Sample projects loaded'); refresh(); }).catch(toastErr)}>Load sample projects</button>`}
         <a class="btn ghost" href="#/setup">Run setup again</a>
       </div>
+      <p class="small muted" style="margin-top:12px">Automatic backups keep your saved setup, conversations, drawings and encrypted sign-ins on this computer. Up to seven snapshots are kept. ${s.backups?.createdAt ? `Last backup: ${fmtDate(s.backups.createdAt)}.` : 'The first backup is being prepared.'} The data export includes setup and conversations; drawing files and sign-ins stay in the local backups.</p>
+      ${s.backups?.error && html`<div class="banner">Backup needs attention: ${s.backups.error}</div>`}
     </div>
     <p class="tiny muted" style="margin-top:20px">Nelson OS ${state.version}</p>
   </div>`;

@@ -4,14 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { PDFDocument } from 'pdf-lib';
-import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { db, get, indexText, insert, logActivity, newId, search, update } from '../db.js';
-import { FILES_DIR } from '../paths.js';
+import { Worker } from 'node:worker_threads';
+import { db, get, indexText, insert, logActivity, newId, search, transaction, update } from '../db.js';
+import { FILES_DIR, relativeDocPath, resolveDocPath } from '../paths.js';
 import { createMessage, engineStatus, complete } from '../ai/engine.js';
 import { askWithLocalAgent } from '../ai/cli-agent.js';
-
-const SHEET_RE = /^(?:[A-Z]{1,3}[-.]?\d{1,3}(?:\.\d{1,3})?[A-Z]?)$/;
-const TITLE_HINT = /\b(PLAN|ELEVATION|SECTION|DETAIL|SCHEDULE|NOTES|FOUNDATION|FRAMING|ROOF|FLOOR|SITE|REFLECTED|CEILING|WALL|STAIR|ENLARGED|PLUMBING|ELECTRICAL|MECHANICAL|COVER|LEGEND)/;
 
 /** Save an uploaded PDF and index it in the background. */
 export function addDocument({ projectId, filename, bytes, kind = 'drawings', source = 'upload' }) {
@@ -20,58 +17,61 @@ export function addDocument({ projectId, filename, bytes, kind = 'drawings', sou
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${id}.pdf`);
   fs.writeFileSync(file, bytes);
-  const doc = insert('documents', { id, project_id: projectId, filename, kind, size: bytes.length, path: file, status: 'indexing', source });
+  const doc = insert('documents', { id, project_id: projectId, filename, kind, size: bytes.length, path: relativeDocPath(file), status: 'indexing', source });
   logActivity({ actor: source === 'upload' ? 'user' : 'agent', kind: 'document', project_id: projectId, title: `Added ${filename}`, why: source === 'upload' ? 'Uploaded.' : `Imported from ${source}.`, entity_type: 'documents', entity_id: id });
   indexDocument(id).catch((err) => update('documents', id, { status: 'error', error: err.message }));
   return doc;
 }
 
-function detectSheet(items, view) {
-  const [, , w, h] = view;
-  let sheet = null;
-  let title = null;
-  for (const it of items) {
-    const str = (it.str || '').trim();
-    if (!str) continue;
-    const size = Math.hypot(it.transform[0], it.transform[1]);
-    const x = it.transform[4];
-    const y = it.transform[5];
-    const corner = x > w * 0.6 && y < h * 0.35; // title blocks sit bottom-right
-    if (SHEET_RE.test(str) && /\d/.test(str)) {
-      const score = size * (corner ? 3 : 1);
-      if (!sheet || score > sheet.score) sheet = { value: str, score };
-    } else if (corner && TITLE_HINT.test(str.toUpperCase()) && str.length >= 6 && str.length < 60) {
-      if (!title || size > title.size) title = { value: str, size };
-    }
-  }
-  return { sheet: sheet?.value || null, title: title?.value || null };
+// One document at a time, each in its own worker thread, so indexing never blocks the app.
+let queue = Promise.resolve();
+export function indexDocument(docId) {
+  const run = queue.then(() => indexInWorker(docId));
+  queue = run.catch(() => {});
+  return run;
 }
 
-export async function indexDocument(docId) {
+function indexInWorker(docId) {
   const doc = get('documents', docId);
-  const data = new Uint8Array(fs.readFileSync(doc.path));
-  const task = getDocument({ data, isEvalSupported: false, disableFontFace: true, verbosity: 0 });
-  const pdf = await task.promise;
+  if (!doc) return Promise.resolve(null);
+  const file = resolveDocPath(doc.path);
+  if (!fs.existsSync(file)) {
+    update('documents', docId, { status: 'error', error: 'The PDF file is missing. Upload it again.' });
+    return Promise.resolve(get('documents', docId));
+  }
   db.prepare('DELETE FROM doc_pages WHERE doc_id = ?').run(docId);
   db.prepare("DELETE FROM search_fts WHERE kind = 'doc_page' AND ref_id LIKE ?").run(`${docId}:%`);
-  const sheets = [];
-  for (let n = 1; n <= pdf.numPages; n++) {
-    const page = await pdf.getPage(n);
-    const tc = await page.getTextContent();
-    const text = tc.items.map((it) => (it.str || '') + (it.hasEOL ? '\n' : ' ')).join('').replace(/[ \t]+/g, ' ').trim();
-    const { sheet, title } = detectSheet(tc.items, page.view);
-    const pageId = `${docId}:${n}`;
-    db.prepare('INSERT INTO doc_pages (id, doc_id, project_id, page, sheet, title, text) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(pageId, docId, doc.project_id, n, sheet, title, text.slice(0, 60000));
-    indexText('doc_page', pageId, doc.project_id, `${doc.filename} page ${n} ${sheet || ''} ${title || ''}`, text);
-    if (sheet) sheets.push(sheet);
-    page.cleanup();
-  }
-  const pageCount = pdf.numPages;
-  await task.destroy();
-  const discipline = guessDiscipline(sheets, doc.filename);
-  update('documents', docId, { status: 'ready', pages: pageCount, discipline, error: null });
-  return get('documents', docId);
+  update('documents', docId, { status: 'indexing', error: null });
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./extract-worker.js', import.meta.url), { workerData: { file } });
+    const sheets = [];
+    let pageCount = 0;
+    let chars = 0;
+    worker.on('message', (m) => {
+      if (m.type === 'start') pageCount = m.pages;
+      if (m.type === 'page') {
+        const pageId = `${docId}:${m.page}`;
+        transaction(() => {
+          db.prepare('INSERT OR REPLACE INTO doc_pages (id, doc_id, project_id, page, sheet, title, text) VALUES (?, ?, ?, ?, ?, ?, ?)')
+            .run(pageId, docId, doc.project_id, m.page, m.sheet, m.title, m.text);
+          indexText('doc_page', pageId, doc.project_id, `${doc.filename} page ${m.page} ${m.sheet || ''} ${m.title || ''}`, m.text);
+        });
+        if (m.sheet) sheets.push(m.sheet);
+        chars += m.text.length;
+      }
+      if (m.type === 'done') {
+        // Scanned sets have no selectable text; questions then need a sheet or page number.
+        const scanned = pageCount > 0 && chars < pageCount * 40;
+        update('documents', docId, { status: 'ready', pages: pageCount, discipline: guessDiscipline(sheets, doc.filename), error: scanned ? 'scanned' : null });
+        resolve(get('documents', docId));
+      }
+    });
+    worker.on('error', (err) => {
+      update('documents', docId, { status: 'error', error: `Could not read this PDF (${err.message}). If it is password-protected, save an unlocked copy and upload that.` });
+      reject(err);
+    });
+    worker.on('exit', (code) => { if (code !== 0) reject(new Error(`PDF reader stopped (${code})`)); });
+  });
 }
 
 function guessDiscipline(sheets, filename) {
@@ -96,6 +96,12 @@ export function relevantPages(projectId, question, max = 5) {
       WHERE p.project_id IS ? AND REPLACE(UPPER(p.sheet), '-', '') = REPLACE(?, '-', '') LIMIT 2`).all(projectId ?? null, ref);
     for (const r of rows) picked.set(r.id, r);
   }
+  // "page 12" works even for scanned sets that have no readable sheet numbers.
+  for (const m of String(question).matchAll(/\bpage\s+(\d{1,4})\b/gi)) {
+    const rows = db.prepare(`SELECT p.*, d.filename, d.path FROM doc_pages p JOIN documents d ON d.id = p.doc_id
+      WHERE p.project_id IS ? AND p.page = ? ORDER BY d.updated_at DESC LIMIT 1`).all(projectId ?? null, Number(m[1]));
+    for (const r of rows) picked.set(r.id, r);
+  }
   for (const hit of search(question, { projectId, kinds: ['doc_page'], limit: max * 2 })) {
     if (picked.size >= max) break;
     const row = db.prepare('SELECT p.*, d.filename, d.path FROM doc_pages p JOIN documents d ON d.id = p.doc_id WHERE p.id = ?').get(hit.ref_id);
@@ -105,7 +111,8 @@ export function relevantPages(projectId, question, max = 5) {
 }
 
 const pdfCache = new Map();
-async function loadPdf(file) {
+async function loadPdf(stored) {
+  const file = resolveDocPath(stored);
   if (!pdfCache.has(file)) {
     if (pdfCache.size > 2) pdfCache.delete(pdfCache.keys().next().value);
     pdfCache.set(file, await PDFDocument.load(fs.readFileSync(file), { ignoreEncryption: true, updateMetadata: false }));

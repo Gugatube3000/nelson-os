@@ -1,6 +1,6 @@
 // Outlook sync (read-only): pull mail from the inbox and sent items, group conversations,
 // triage them, and pull the next three weeks of calendar events.
-import { db, getSetting, indexText, logActivity, now, setSetting } from '../db.js';
+import { db, getSetting, indexText, logActivity, now, setSetting, transaction } from '../db.js';
 import { projectInText } from '../domain/projects.js';
 import { CONFIG } from '../paths.js';
 import { stripQuoted } from '../ai/tools.js';
@@ -59,18 +59,31 @@ export function rebuildThread(conversationId) {
   }
 }
 
-async function syncCalendar() {
+export async function syncCalendar() {
   const start = new Date(Date.now() - 86400000).toISOString();
   const end = new Date(Date.now() + 21 * 86400000).toISOString();
   const headers = { Prefer: 'outlook.timezone="Eastern Standard Time"' };
-  db.prepare('DELETE FROM calendar_events WHERE start >= ?').run(start.slice(0, 10));
+  const events = [];
   for await (const batch of pages(`/me/calendarView?startDateTime=${start}&endDateTime=${end}&$select=id,subject,start,end,location,organizer,webLink&$orderby=start/dateTime&$top=100`, { headers })) {
-    for (const e of batch) {
+    events.push(...batch);
+  }
+  transaction(() => {
+    db.prepare("DELETE FROM calendar_events WHERE start >= ? AND start <= ? AND id NOT LIKE 'demo-%'").run(start.slice(0, 10), `${end.slice(0, 10)}T23:59`);
+    for (const e of events) {
       const p = projectInText(`${e.subject} ${e.location?.displayName || ''}`);
       db.prepare(`INSERT OR REPLACE INTO calendar_events (id, subject, start, end, location, organizer, project_id, web_link, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(e.id, e.subject, e.start?.dateTime?.slice(0, 16), e.end?.dateTime?.slice(0, 16), e.location?.displayName || null, e.organizer?.emailAddress?.name || null, p?.id || null, e.webLink || null, now(), now());
     }
+  });
+}
+
+async function folderIds() {
+  const ids = {};
+  for (const name of ['deleteditems', 'junkemail', 'drafts', 'outbox', 'conversationhistory', 'syncissues', 'sentitems']) {
+    try { ids[name] = (await graph(`/me/mailFolders/${name}?$select=id`)).id; } catch { /* folder not present */ }
   }
+  const { sentitems: sent, ...rest } = ids;
+  return { sent, skip: new Set(Object.values(rest).filter(Boolean)) };
 }
 
 /** Sync Outlook. The first run reads the last `days` (default 30); later runs read what is new. */
@@ -86,13 +99,26 @@ export async function syncMail({ days } = {}) {
     const me = (getSetting('microsoft.account')?.email || '').toLowerCase();
     const touched = new Set();
     const headers = { Prefer: 'outlook.body-content-type="text"' };
-    for (const [folder, field, label] of [['inbox', 'receivedDateTime', 'Reading your inbox'], ['sentitems', 'sentDateTime', 'Reading your sent mail']]) {
-      syncState.phase = label;
-      for await (const batch of pages(`/me/mailFolders/${folder}/messages?$filter=${field} ge ${since}&$orderby=${field} desc&$top=50&$select=${SELECT}`, { headers })) {
-        for (const m of batch) {
-          upsertEmail(m, folder, me);
-          if (m.conversationId) touched.add(m.conversationId);
-          syncState.fetched++;
+    const take = (m, folder) => {
+      upsertEmail(m, folder, me);
+      if (m.conversationId) touched.add(m.conversationId);
+      syncState.fetched++;
+    };
+    try {
+      // Every folder, including project folders that Outlook rules file mail into and the
+      // archive; Deleted Items, Junk, Drafts and Outbox are skipped.
+      const { skip, sent } = await folderIds();
+      syncState.phase = 'Reading your mail';
+      for await (const batch of pages(`/me/messages?$filter=receivedDateTime ge ${since}&$orderby=receivedDateTime desc&$top=50&$select=${SELECT},parentFolderId`, { headers })) {
+        for (const m of batch) if (!skip.has(m.parentFolderId)) take(m, m.parentFolderId === sent ? 'sentitems' : 'mail');
+      }
+    } catch (err) {
+      if (err.code === 'SEND_BLOCKED' || err.code === 'NOT_CONNECTED') throw err;
+      console.warn('[sync] all-folder read failed, reading Inbox and Sent Items:', err.message);
+      for (const [folder, field, label] of [['inbox', 'receivedDateTime', 'Reading your inbox'], ['sentitems', 'sentDateTime', 'Reading your sent mail']]) {
+        syncState.phase = label;
+        for await (const batch of pages(`/me/mailFolders/${folder}/messages?$filter=${field} ge ${since}&$orderby=${field} desc&$top=50&$select=${SELECT}`, { headers })) {
+          for (const m of batch) take(m, folder);
         }
       }
     }

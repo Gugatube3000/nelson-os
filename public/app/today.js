@@ -1,5 +1,22 @@
 import { html, useState, api, useApi, useApp, go, toast, toastErr, fmtDate, fmtDay, ago, until, todayIso, Loading, ErrorNote, Sev, ProjectChip, Busy } from './lib.js';
 
+// New answers, returns, slips and items found in email since you last looked.
+function Changes({ items }) {
+  if (!items.length) return null;
+  const open = (c) => {
+    if (c.entity_type === 'threads') return go(`#/inbox/${encodeURIComponent(c.entity_id)}`);
+    if (c.project_id && TAB_FOR[c.entity_type]) return go(`#/projects/${c.project_id}/${TAB_FOR[c.entity_type]}?open=${c.entity_id}`);
+    if (c.project_id) return go(`#/projects/${c.project_id}`);
+    return go('#/activity');
+  };
+  return html`<div class="ball"><h2>What changed <span class="n">last 3 days</span></h2>
+    <div class="items">${items.slice(0, 8).map((c) => html`<button class="item" onClick=${() => open(c)}>
+      <div class="grow"><div class="what" style="color:var(--ink)">${c.title}</div>${c.project && html`<div class="small muted">${c.project}${c.kind === 'detected' ? ' · found in email' : ' · Procore'}</div>`}</div>
+      <div class="age">${ago(c.at)}</div>
+    </button>`)}
+    ${items.length > 8 ? html`<a class="item small muted" href="#/activity">${items.length - 8} more in Activity</a>` : null}</div></div>`;
+}
+
 const TAB_FOR = { rfis: 'rfis', submittals: 'submittals', orders: 'procurement', takeoffs: 'procurement', schedule_items: 'schedule', changes: 'budget', permits: 'permits', inspections: 'permits', projects: 'overview' };
 
 export function sourceHref(s, projectId) {
@@ -88,6 +105,7 @@ export function Today() {
       <aside>
         <div class="ball"><h2>Waiting on you <span class="n">${b.waitingOnMe.length}</span></h2><${WaitList} items=${b.waitingOnMe} empty="No one is waiting on you." mine=${true} /></div>
         <div class="ball" id="today-waiting"><h2>You're waiting on <span class="n">${b.waitingOnOthers.length}</span></h2><${WaitList} items=${b.waitingOnOthers} empty="Nothing outstanding." /></div>
+        <${Changes} items=${b.changes || []} />
         <div class="ball"><h2>Next three weeks</h2>
           ${b.lookahead.length ? html`<div class="items">${b.lookahead.slice(0, 12).map((l) => html`<div class="look">
             <div class="d">${l.date < todayIso() ? 'Now' : fmtDate(l.date)}<span>${l.date < todayIso() ? `to ${fmtDate(l.end)}` : `${fmtDay(l.date)}${l.time ? ` ${l.time}` : ''}`}</span></div>

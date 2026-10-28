@@ -64,8 +64,17 @@ function ApprovalCard({ a, onDone }) {
       onDone(); refresh();
     } catch (e) { toastErr(e); } finally { setBusy(null); }
   };
+  const clear = async () => { try { await api(`/approvals/${a.id}/dismiss`, { method: 'POST' }); onDone(); refresh(); } catch (e) { toastErr(e); } };
   let body = null;
   try { body = a.body_json && Object.keys(a.body_json).length ? JSON.stringify(a.body_json, null, 2) : null; } catch { /* none */ }
+  if (a.status === 'unknown' || a.status === 'failed') {
+    return html`<article class="risk high" style="margin-bottom:10px">
+      <div class="meta"><span class="chip high">${a.status === 'unknown' ? 'Check in Procore' : 'Procore did not accept this'}</span>${a.project && html`<span class="chip project">${a.project}</span>`}<span class="small muted">${ago(a.decided_at || a.created_at)}</span></div>
+      <h3>${a.title}</h3>
+      <p class="small" style="margin-top:4px">${a.status === 'unknown' ? a.result : `Procore's answer: ${String(a.result || '').split('\n').slice(0, 3).join(' ').slice(0, 400)}`}</p>
+      <div class="row" style="margin-top:12px"><button class="btn" onClick=${clear}>I've checked it, clear this</button></div>
+    </article>`;
+  }
   return html`<article class="risk medium" style="margin-bottom:10px">
     <div class="meta"><span class="chip medium">Needs your approval</span>${a.project && html`<span class="chip project">${a.project}</span>`}<span class="small muted">Procore · ${ago(a.created_at)}</span></div>
     <h3>${a.title}</h3>
